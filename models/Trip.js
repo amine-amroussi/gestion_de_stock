@@ -14,6 +14,7 @@ module.exports = (sequelize, DataTypes) => {
     waitedAmount: { type: DataTypes.DECIMAL(10, 2), defaultValue: 0 },
     receivedAmount: { type: DataTypes.DECIMAL(10, 2), defaultValue: 0 },
     benefit: { type: DataTypes.DECIMAL(10, 2), defaultValue: 0 },
+    deff : { type: DataTypes.DECIMAL(10, 2), defaultValue: 0 },
     isActive: { type: DataTypes.BOOLEAN, defaultValue: true }
   }, { tableName: 'Trip', timestamps: false });
 

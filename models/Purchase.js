@@ -5,7 +5,6 @@ module.exports = (sequelize, DataTypes) => {
       primaryKey: true,
       autoIncrement: true 
     },
-    purchase: { type: DataTypes.STRING(100), allowNull: true }, // Kept as a field but not PK
     supplier: { type: DataTypes.INTEGER, allowNull: false },
     date: { type: DataTypes.DATE },
     total: { type: DataTypes.DECIMAL(10, 2) }
