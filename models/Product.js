@@ -10,12 +10,14 @@ module.exports = (sequelize, DataTypes) => {
       designation: { type: DataTypes.STRING(100), allowNull: false },
       genre: { type: DataTypes.STRING(100), allowNull: false },
       priceUnite: { type: DataTypes.DECIMAL(10, 2), allowNull: false },
+      uniteInStock : { type: DataTypes.SMALLINT, defaultValue: 0 },
       commaission: {
         type: DataTypes.DECIMAL(10, 2),
         allowNull: false,
         defaultValue: 0.008,
       },
       stock: { type: DataTypes.SMALLINT, defaultValue: 0 },
+      capacityByBox : { type: DataTypes.SMALLINT, defaultValue: 0 },
       box: { type: DataTypes.INTEGER, defaultValue: 0 },
     },
     { tableName: "Product", timestamps: false }

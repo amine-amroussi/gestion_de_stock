@@ -1,4 +1,6 @@
 require("dotenv").config();
+console.log(process.env.DB_HOST);
+
 module.exports = {
   // development: {
   //   username: 'root',
@@ -15,7 +17,15 @@ module.exports = {
     host: process.env.DB_HOST,
     dialect: "mysql",
     port: process.env.DB_PORT,
+    dialectOptions: {
+      ssl: {
+        require: true,
+        rejectUnauthorized: false, // Use true with CA
+        // ca: fs.readFileSync('path/to/aiven-ca.pem'),
+      },
+    },
   },
+
   test: {
     username: "root",
     password: null,

@@ -43,6 +43,7 @@ app.use(notFoundMiddleware);
 
 const PORT = process.env.PORT || 5000;
 
+
 const start = () => {
   try {
     db.sequelize.sync({ force: false }).then(() => {

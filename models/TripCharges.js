@@ -2,7 +2,6 @@ module.exports = (sequelize, DataTypes) => {
   const TripCharges = sequelize.define('TripCharges', {
     trip: { type: DataTypes.INTEGER, primaryKey: true },
     charge: { type: DataTypes.INTEGER, primaryKey: true },
-  
     amount: { type: DataTypes.DECIMAL(10, 2) }
   }, { tableName: 'TripCharges', timestamps: false });
 

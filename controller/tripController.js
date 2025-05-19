@@ -184,9 +184,16 @@ const finishTrip = async (req, res) => {
   // Update the quantity of the products and boxes
   await Promise.all(
     tripProductsData.map(async (tripProduct) => {
+      console.log(tripProduct);
+      
       const product = await db.Product.findOne({
         where: { id: tripProduct.product },
       });
+      if (tripProduct.qttReutour > tripProduct.qttOut) {
+        throw new CustomError.BadRequestError(
+          `La quantite de qui sorte de produit : ${tripProduct.designation} est inferieur a la quantite qui retourne`
+        );
+      }
       if (product) {
         product.stock += tripProduct.qttReutour;
         await product.save();
@@ -199,6 +206,11 @@ const finishTrip = async (req, res) => {
       const box = await db.Box.findOne({
         where: { id: tripBox.box },
       });
+      if (tripBox.qttIn < tripBox.qttOut) {
+        throw new CustomError.BadRequestError(
+          `La quantite qui entre est inferieur a la quantite qui sort`
+        );
+      }
       if (box) {
         box.inStock += tripBox.qttIn;
         box.sent -= tripBox.qttOut;

@@ -10,7 +10,6 @@ module.exports = (sequelize, DataTypes) => {
     inStock: { type: DataTypes.SMALLINT, defaultValue: 0 },
     empty : { type: DataTypes.SMALLINT, defaultValue: 0 },
     sent : { type: DataTypes.SMALLINT, defaultValue: 0 },
-    capacity: { type: DataTypes.INTEGER }
   }, { tableName: 'Box', timestamps: false });
 
   Box.associate = (models) => {

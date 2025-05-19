@@ -1,9 +1,9 @@
 const db = require("../models");
 const { StatusCodes } = require("http-status-codes");
+const CustomError = require("../errors");
 
 // Create a new box
 const createBox = async (req, res) => {
-  console.log(req.body);
   
   const box = await db.Box.create(req.body);
   res.status(StatusCodes.CREATED).json({
@@ -48,6 +48,21 @@ const updateBox = async (req, res) => {
 // Delete a box
 const deleteBox = async (req, res) => {
   const { id: boxId } = req.params;
+  const box = await db.Box.findOne({
+    where: {
+      id: boxId,
+    },
+  })  
+
+  if (!box) {
+    throw new CustomError.NotFoundError("Box not found");
+  }
+  if (box.inStock !== 0 || box.empty !== 0 || box.sent !== 0) {
+    console.log(box.inStock, box.empty, box.sent);
+    
+    throw new CustomError.BadRequestError("Box is not empty");
+  }
+
   await db.Box.destroy({
     where: {
       id: boxId,

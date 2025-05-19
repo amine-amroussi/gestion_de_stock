@@ -32,7 +32,6 @@ const createPurchase = async (req, res) => {
   });
 
   const purchase_id = newPurchase.id; // Correct variable name
-  console.log("Purchase ID:", purchase_id);
 
   // Create purchase products
   const purchaseProductsPromises = purchaseProducts.map((product) => {
@@ -40,6 +39,7 @@ const createPurchase = async (req, res) => {
       purchase_id, // Correct variable name
       product: product.product_id,
       qtt: product.qtt,
+      qttUnite: product.qttUnite > 0 ? product.qttUnite : 0,
       price: product.price,
       supplier: supplier_id,
     });
@@ -70,9 +70,14 @@ const createPurchase = async (req, res) => {
     : [];
 
   // Calculate the total
-  const purchaseProductsTotal = purchaseProducts.reduce((acc, product) => {
-    return acc + product.price * product.qtt;
-  }, 0);
+  let total = 0;
+  purchaseProductsPromises.forEach(async (product) => {
+    const _product = await db.Product.findOne({
+      where: { id: product.product },
+    });
+    total +=
+      product.price * (_product.capacityByBox * product.qtt + product.qttUnite);
+  });
 
   // Update the purchase total
   await db.Purchase.update(
@@ -98,7 +103,11 @@ const createPurchase = async (req, res) => {
 
       // Update the stock
       await db.Product.update(
-        { stock: existingProduct.stock + qtt },
+        {
+          stock: existingProduct.stock + qtt,
+          uniteInStock: existingProduct.uniteInStock + product.qttUnite,
+          
+        },
         { where: { id: productId } }
       );
     })
@@ -157,7 +166,7 @@ const createPurchase = async (req, res) => {
       id: newPurchase.id,
       supplier_id,
       date,
-      total: purchaseProductsTotal,
+      total,
     },
     purchaseProducts: await Promise.all(purchaseProductsPromises),
     purchaseBoxes: await Promise.all(purchaseBoxesPromises),
@@ -199,7 +208,7 @@ const getAllPurchases = async (req, res) => {
   });
 
   res.status(StatusCodes.OK).json({ purchases });
-}
+};
 
 const getPurchaseById = async (req, res) => {
   const { id } = req.params;
@@ -242,7 +251,7 @@ const getPurchaseById = async (req, res) => {
   }
 
   res.status(StatusCodes.OK).json({ purchase });
-}
+};
 
 module.exports = {
   createPurchase,
