@@ -81,7 +81,7 @@ const createPurchase = async (req, res) => {
 
   // Update the purchase total
   await db.Purchase.update(
-    { total: purchaseProductsTotal },
+    { total: total },
     { where: { id: purchase_id } }
   );
 

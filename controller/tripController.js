@@ -84,6 +84,7 @@ const startTrip = async (req, res) => {
       });
       if (product) {
         product.stock -= tripProduct.qttOut;
+        product.uniteInStock -= tripProduct.qttOutUnite;
         await product.save();
       }
     })
@@ -151,10 +152,9 @@ const finishTrip = async (req, res) => {
         where: { product: tripProduct.product_id, trip: trip_id },
       });
       if (product) {
-        console.log("is the produc there ");
-
         product.qttReutour = tripProduct.qttReutour;
-        product.qttVendu = product.qttOut - tripProduct.qttReutour;
+        product.qttReutourUnite = tripProduct.qttReutourUnite;
+        product.qttVendu = product.qttOut - tripProduct.qttReutour - tripProduct.qttReutourUnite;
         await product.save();
       }
     })
@@ -184,7 +184,6 @@ const finishTrip = async (req, res) => {
   // Update the quantity of the products and boxes
   await Promise.all(
     tripProductsData.map(async (tripProduct) => {
-      console.log(tripProduct);
       
       const product = await db.Product.findOne({
         where: { id: tripProduct.product },
@@ -196,6 +195,7 @@ const finishTrip = async (req, res) => {
       }
       if (product) {
         product.stock += tripProduct.qttReutour;
+        product.uniteInStock += tripProduct.qttReutourUnite;
         await product.save();
       }
     })
@@ -287,8 +287,8 @@ const finishTrip = async (req, res) => {
   tripProductsWithInfo.forEach((tripProduct) => {
     const productPrice = tripProduct.product.priceUnite;
     const qttVendu = tripProduct.qttVendu;
-    const capacity = tripProduct.product.BoxAssociation.capacity;
-    waitedAmount += productPrice * capacity * qttVendu;
+    const capacity = tripProduct.product.capacityByBox;
+    waitedAmount += productPrice * (capacity )  * qttVendu;
   });
   // set tripinformation
   trip.waitedAmount = waitedAmount;
