@@ -151,10 +151,15 @@ const finishTrip = async (req, res) => {
       const product = await db.TripProduct.findOne({
         where: { product: tripProduct.product_id, trip: trip_id },
       });
+      const _product = await db.Product.findOne({
+        where: { id: tripProduct.product_id },
+      });
       if (product) {
         product.qttReutour = tripProduct.qttReutour;
         product.qttReutourUnite = tripProduct.qttReutourUnite;
-        product.qttVendu = product.qttOut - tripProduct.qttReutour - tripProduct.qttReutourUnite;
+        product.qttVendu =
+          _product.capacityByBox * (product.qttOut - tripProduct.qttReutour) +
+          (product.qttOutUnite - tripProduct.qttReutourUnite);
         await product.save();
       }
     })
@@ -172,7 +177,6 @@ const finishTrip = async (req, res) => {
   );
 
   // Check if the trip is already in the database
-
   // get trip products and boxes
   const tripProductsData = await db.TripProduct.findAll({
     where: { trip: trip_id },
@@ -184,7 +188,6 @@ const finishTrip = async (req, res) => {
   // Update the quantity of the products and boxes
   await Promise.all(
     tripProductsData.map(async (tripProduct) => {
-      
       const product = await db.Product.findOne({
         where: { id: tripProduct.product },
       });
@@ -288,7 +291,7 @@ const finishTrip = async (req, res) => {
     const productPrice = tripProduct.product.priceUnite;
     const qttVendu = tripProduct.qttVendu;
     const capacity = tripProduct.product.capacityByBox;
-    waitedAmount += productPrice * (capacity )  * qttVendu;
+    waitedAmount += productPrice * capacity * qttVendu;
   });
   // set tripinformation
   trip.waitedAmount = waitedAmount;

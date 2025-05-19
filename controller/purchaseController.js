@@ -31,7 +31,7 @@ const createPurchase = async (req, res) => {
     total: 0,
   });
 
-  const purchase_id = newPurchase.id; // Correct variable name
+  const purchase_id = newPurchase.id;
 
   // Create purchase products
   const purchaseProductsPromises = purchaseProducts.map((product) => {
@@ -71,20 +71,24 @@ const createPurchase = async (req, res) => {
 
   // Calculate the total
   let total = 0;
-  purchaseProductsPromises.forEach(async (product) => {
-    const _product = await db.Product.findOne({
-      where: { id: product.product },
-    });
-    total +=
-      product.price * (_product.capacityByBox * product.qtt + product.qttUnite);
-  });
+  
+  purchaseProductsPromises.forEach(async ( product) => {
+      const pd = await product
+      console.log(pd);
+      
+      const _product = await db.Product.findOne({
+        where: { id: await pd.product },
+      });
 
-  // Update the purchase total
-  await db.Purchase.update(
+    total += parseFloat(pd.price) * (parseFloat(_product.capacityByBox) * parseFloat (pd.qtt) + parseFloat(pd.qttUnite));
+    await db.Purchase.update(
     { total: total },
     { where: { id: purchase_id } }
   );
+  });
+  
 
+  // Update the purchase total
   // increase the stock of the products
   await Promise.all(
     purchaseProducts.map(async (product) => {
@@ -137,8 +141,9 @@ const createPurchase = async (req, res) => {
   );
 
   // if there is wastes decrease the quantity from Waste tabel stock
-  await Promise.all(
-    purchaseWaste.map(async (waste) => {
+if(purchaseWaste.length >0){
+ await Promise.all(
+    purchaseWaste?.map(async (waste) => {
       const wasteId = waste.product_id;
       const qtt = waste.quantity;
 
@@ -159,6 +164,9 @@ const createPurchase = async (req, res) => {
       );
     })
   );
+}
+   
+ 
 
   // Send the response
   res.status(StatusCodes.CREATED).json({

@@ -35,7 +35,7 @@ const getAllProducts = async (req, res) => {
         attributes: ["id", "designation"],
       },
     ],
-    attributes: ["id", "designation", "priceUnite", "genre", "stock"],
+    // attributes: ["id", "designation", "priceUnite", "genre", "stock"],
     order: [["id", "ASC"]],
   });
   res.status(StatusCodes.OK).json({
