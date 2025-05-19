@@ -55,7 +55,7 @@ const getProductById = async (req, res) => {
       {
         model: db.Box,
         as: "BoxAssociation",
-        attributes: ["id", "designation", "capacity"],
+        attributes: ["id", "designation", ],
       },
     ],
     attributes: ["id", "designation", "priceUnite", "genre", "stock"],
