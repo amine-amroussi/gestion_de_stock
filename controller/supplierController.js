@@ -16,13 +16,29 @@ const createSupplier = async (req, res) => {
 };
 
 const getAllSuppliers = async (req, res) => {
-  const suppliers = await db.Supplier.findAll({
-    attributes: ["id", "name", "address", "tel"],
+  const { page = 1, limit = 10 } = req.query;
+  const offset = (page - 1) * limit;
+
+  const { count, rows: suppliers } = await db.Supplier.findAndCountAll({
+    attributes: ['id', 'name', 'address', 'tel'],
+    limit: parseInt(limit),
+    offset: parseInt(offset),
   });
-  if (!suppliers) {
-    throw new CustumError.NotFoundError("No suppliers found");
-  }
-  res.status(StatusCodes.OK).json({ suppliers });
+
+  const totalPages = Math.ceil(count / limit);
+
+  res.status(StatusCodes.OK).json({
+    status: 'success',
+    data: {
+      suppliers,
+      pagination: {
+        totalItems: count,
+        totalPages,
+        currentPage: parseInt(page),
+        pageSize: parseInt(limit),
+      },
+    },
+  });
 };
 
 const getSupplierById = async (req, res) => {

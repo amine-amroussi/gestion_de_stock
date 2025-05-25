@@ -17,23 +17,48 @@ const createEmployee = async (req, res) => {
   res.status(StatusCodes.CREATED).json({ employee });
 };
 
+
 const getAllEmployees = async (req, res) => {
-  const employees = await db.Employee.findAll({
-    attributes: ["cin", "type", "name", "address", "tel", "salary_fix"],
+  // Extract pagination parameters from query string
+  const page = parseInt(req.query.page) || 1; // Default to page 1
+  const limit = parseInt(req.query.limit) || 10; // Default to 10 items per page
+  const offset = (page - 1) * limit; // Calculate offset
+
+  // Fetch employees with pagination and include total count
+  const { count, rows: employees } = await db.Employee.findAndCountAll({
+    attributes: ["cin", "role", "name", "address", "tel", "salary_fix"],
+    order: [["cin", "ASC"]], // Sort by CIN for consistency
+    limit, // Number of records per page
+    offset, // Starting point
   });
 
-  if (!employees) {
+  if (!employees || employees.length === 0) {
     throw new CustumError.NotFoundError("No employees found");
   }
 
-  res.status(StatusCodes.OK).json({ employees });
+  // Calculate pagination metadata
+  const totalPages = Math.ceil(count / limit);
+
+  // Return paginated response
+  res.status(StatusCodes.OK).json({
+    status: "success",
+    data: {
+      employees,
+      pagination: {
+        totalItems: count,
+        totalPages,
+        currentPage: page,
+        pageSize: limit,
+      },
+    },
+  });
 };
 
 const getEmployeeById = async (req, res) => {
   const { id: employeeId } = req.params;
   const employee = await db.Employee.findOne({
     where: { cin: employeeId },
-    attributes: ["cin", "type", "name", "address", "tel", "salary_fix"],
+    attributes: ["cin", "role", "name", "address", "tel", "salary_fix"],
   });
   if (!employee) {
     throw new CustumError.NotFoundError(`No employee with id : ${employeeId}`);

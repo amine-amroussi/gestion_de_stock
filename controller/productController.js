@@ -27,7 +27,13 @@ const createProduct = async (req, res) => {
 };
 
 const getAllProducts = async (req, res) => {
-  const products = await db.Product.findAll({
+  // Extract pagination parameters from query string
+  const page = parseInt(req.query.page) || 1; // Default to page 1
+  const limit = parseInt(req.query.limit) || 10; // Default to 10 items per page
+  const offset = (page - 1) * limit; // Calculate offset
+
+  // Fetch products with pagination and include total count
+  const { count, rows: products } = await db.Product.findAndCountAll({
     include: [
       {
         model: db.Box,
@@ -35,17 +41,28 @@ const getAllProducts = async (req, res) => {
         attributes: ["id", "designation"],
       },
     ],
-    // attributes: ["id", "designation", "priceUnite", "genre", "stock"],
     order: [["id", "ASC"]],
+    limit, // Number of records per page
+    offset, // Starting point
   });
+
+  // Calculate pagination metadata
+  const totalPages = Math.ceil(count / limit);
+
+  // Return paginated response
   res.status(StatusCodes.OK).json({
     status: "success",
     data: {
       products,
+      pagination: {
+        totalItems: count,
+        totalPages,
+        currentPage: page,
+        pageSize: limit,
+      },
     },
   });
 };
-
 const getProductById = async (req, res) => {
 
   const { id } = req.params;  
@@ -58,7 +75,6 @@ const getProductById = async (req, res) => {
         attributes: ["id", "designation", ],
       },
     ],
-    attributes: ["id", "designation", "priceUnite", "genre", "stock"],
   });
   if (!product) {
     throw new CustumError.NotFoundError(`No product with id : ${id}`);
@@ -80,10 +96,10 @@ if (!designation || !priceUnite || !genre) {
   throw new CustumError.BadRequestError("Please provide all values");
 }
 // Check if the product already exists
-const existingProduct = await db.Product.findOne({ where: { designation } });
-if (existingProduct && existingProduct.id !== id) {
-  throw new CustumError.BadRequestError("Product already exists");
-}
+// const existingProduct = await db.Product.findOne({ where: { designation } });
+// if (existingProduct && existingProduct.id !== id) {
+//   throw new CustumError.BadRequestError("Product not exists");
+// }
 // Update the product
 const product = await db.Product.update
   (

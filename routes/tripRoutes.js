@@ -1,16 +1,22 @@
-const router = require("express").Router();
+const express = require("express");
+const router = express.Router();
 const {
   startTrip,
-  getAllTrips,
-  getTripById,
   finishTrip,
   getRestInLastTruck,
   getTrips,
+  getActiveTrips,
+  getTripById,
+  generateInvoice,
 } = require("../controller/tripController");
 
-// 2313A50
-router.route("/").post(startTrip).get(getTrips)
-router.route("/:id").patch(finishTrip).get(getTripById);
-router.route("/lastTruck/:id").get(getRestInLastTruck);
+// Routes for trip management
+router.get("/", getTrips); // Get all trips with pagination
+router.get("/active", getActiveTrips); // Get active trips
+router.get("/:tripId", getTripById); // Get a trip by ID
+router.post("/start", startTrip); // Start a new trip
+router.post("/finish/:id", finishTrip); // Finish a trip
+router.get("/last/:id", getRestInLastTruck); // Get last trip for a truck
+router.get("/invoice/:id", generateInvoice); // Generate invoice for a trip
 
 module.exports = router;

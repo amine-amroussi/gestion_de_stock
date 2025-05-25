@@ -3,20 +3,14 @@ const { StatusCodes } = require("http-status-codes");
 const db = require("../models");
 
 const createPurchase = async (req, res) => {
-  // Destructure request body
-  const { purchaseProducts, purchaseBoxes, purchaseWaste, supplier_id, date } =
-    req.body;
+  const { purchaseProducts, purchaseBoxes, purchaseWaste, supplier_id, date } = req.body;
 
   // Validate inputs
   if (!purchaseProducts || !Array.isArray(purchaseProducts)) {
-    throw new ErrorCustom.BadRequestError(
-      "Please provide the purchase products in the request body"
-    );
+    throw new ErrorCustom.BadRequestError("Please provide the purchase products in the request body");
   }
   if (!purchaseBoxes || !Array.isArray(purchaseBoxes)) {
-    throw new ErrorCustom.BadRequestError(
-      "Please provide the purchase boxes in the request body"
-    );
+    throw new ErrorCustom.BadRequestError("Please provide the purchase boxes in the request body");
   }
   if (purchaseWaste && !Array.isArray(purchaseWaste)) {
     throw new ErrorCustom.BadRequestError("Purchase waste must be an array");
@@ -36,7 +30,7 @@ const createPurchase = async (req, res) => {
   // Create purchase products
   const purchaseProductsPromises = purchaseProducts.map((product) => {
     return db.PurchaseProduct.create({
-      purchase_id, // Correct variable name
+      purchase_id,
       product: product.product_id,
       qtt: product.qtt,
       qttUnite: product.qttUnite > 0 ? product.qttUnite : 0,
@@ -48,7 +42,7 @@ const createPurchase = async (req, res) => {
   // Create purchase boxes
   const purchaseBoxesPromises = purchaseBoxes.map((box) => {
     return db.PurchaseBox.create({
-      purchase_id, // Correct variable name
+      purchase_id,
       box: box.box,
       qttIn: box.qttIn,
       qttOut: box.qttOut,
@@ -60,7 +54,7 @@ const createPurchase = async (req, res) => {
   const purchaseWastePromises = purchaseWaste
     ? purchaseWaste.map((waste) => {
         return db.PurchaseWaste.create({
-          purchase_id, // Correct variable name
+          purchase_id,
           product: waste.product_id,
           qtt: waste.qtt,
           type: waste.type,
@@ -71,60 +65,45 @@ const createPurchase = async (req, res) => {
 
   // Calculate the total
   let total = 0;
-  
-  purchaseProductsPromises.forEach(async ( product) => {
-      const pd = await product
-      console.log(pd);
-      
-      const _product = await db.Product.findOne({
-        where: { id: await pd.product },
-      });
+  const resolvedProducts = await Promise.all(purchaseProductsPromises);
+  for (const pd of resolvedProducts) {
+    const _product = await db.Product.findOne({
+      where: { id: pd.product },
+    });
+    total += parseFloat(pd.price) * (parseFloat(_product.capacityByBox) * parseFloat(pd.qtt) + parseFloat(pd.qttUnite));
+  }
+  await db.Purchase.update({ total }, { where: { id: purchase_id } });
 
-    total += parseFloat(pd.price) * (parseFloat(_product.capacityByBox) * parseFloat (pd.qtt) + parseFloat(pd.qttUnite));
-    await db.Purchase.update(
-    { total: total },
-    { where: { id: purchase_id } }
-  );
-  });
-  
-
-  // Update the purchase total
-  // increase the stock of the products
+  // Update product stock
   await Promise.all(
     purchaseProducts.map(async (product) => {
       const productId = product.product_id;
       const qtt = product.qtt;
 
-      // Check if the product exists in the database
       const existingProduct = await db.Product.findOne({
         where: { id: productId },
       });
       if (!existingProduct) {
-        throw new ErrorCustom.NotFoundError(
-          `Product with ID ${productId} not found`
-        );
+        throw new ErrorCustom.NotFoundError(`Product with ID ${productId} not found`);
       }
 
-      // Update the stock
       await db.Product.update(
         {
           stock: existingProduct.stock + qtt,
           uniteInStock: existingProduct.uniteInStock + product.qttUnite,
-          
         },
         { where: { id: productId } }
       );
     })
   );
 
-  // increase the stock of the boxes
+  // Update box stock
   await Promise.all(
     purchaseBoxes.map(async (box) => {
       const boxId = box.box;
       const qttIn = box.qttIn;
       const qttOut = box.qttOut;
 
-      // Check if the box exists in the database
       const existingBox = await db.Box.findOne({
         where: { id: boxId },
       });
@@ -132,7 +111,6 @@ const createPurchase = async (req, res) => {
         throw new ErrorCustom.NotFoundError(`Box with ID ${boxId} not found`);
       }
 
-      // Update the stock
       await db.Box.update(
         { inStock: existingBox.inStock + qttIn - qttOut },
         { where: { id: boxId } }
@@ -140,35 +118,28 @@ const createPurchase = async (req, res) => {
     })
   );
 
-  // if there is wastes decrease the quantity from Waste tabel stock
-if(purchaseWaste.length >0){
- await Promise.all(
-    purchaseWaste?.map(async (waste) => {
-      const wasteId = waste.product_id;
-      const qtt = waste.quantity;
+  // Update waste stock
+  if (purchaseWaste && purchaseWaste.length > 0) {
+    await Promise.all(
+      purchaseWaste.map(async (waste) => {
+        const wasteId = waste.product_id;
+        const qtt = waste.qtt;
 
-      // Check if the waste exists in the database
-      const existingWaste = await db.Waste.findOne({
-        where: { product: wasteId },
-      });
-      if (!existingWaste) {
-        throw new ErrorCustom.NotFoundError(
-          `Waste with ID ${wasteId} not found`
+        const existingWaste = await db.Waste.findOne({
+          where: { product: wasteId },
+        });
+        if (!existingWaste) {
+          throw new ErrorCustom.NotFoundError(`Waste with ID ${wasteId} not found`);
+        }
+
+        await db.Waste.update(
+          { qtt: existingWaste.qtt - qtt },
+          { where: { product: wasteId } }
         );
-      }
+      })
+    );
+  }
 
-      // Update the stock
-      await db.Waste.update(
-        { qtt: existingWaste.qtt - qtt },
-        { where: { product: wasteId } }
-      );
-    })
-  );
-}
-   
- 
-
-  // Send the response
   res.status(StatusCodes.CREATED).json({
     purchase: {
       id: newPurchase.id,
@@ -183,7 +154,10 @@ if(purchaseWaste.length >0){
 };
 
 const getAllPurchases = async (req, res) => {
-  const purchases = await db.Purchase.findAll({
+  const { page = 1, limit = 10 } = req.query;
+  const offset = (page - 1) * limit;
+
+  const { count, rows } = await db.Purchase.findAndCountAll({
     include: [
       {
         model: db.Supplier,
@@ -213,9 +187,25 @@ const getAllPurchases = async (req, res) => {
         ],
       },
     ],
+    offset,
+    limit: parseInt(limit),
   });
 
-  res.status(StatusCodes.OK).json({ purchases });
+  if (count === 0) {
+    throw new ErrorCustom.NotFoundError("No purchases found");
+  }
+
+  const pagination = {
+    totalItems: count,
+    totalPages: Math.ceil(count / limit),
+    currentPage: parseInt(page),
+    pageSize: parseInt(limit),
+  };
+
+  res.status(StatusCodes.OK).json({
+    status: "success",
+    data: { purchases: rows, pagination },
+  });
 };
 
 const getPurchaseById = async (req, res) => {
@@ -258,7 +248,7 @@ const getPurchaseById = async (req, res) => {
     throw new ErrorCustom.NotFoundError(`Purchase with ID ${id} not found`);
   }
 
-  res.status(StatusCodes.OK).json({ purchase });
+  res.status(StatusCodes.OK).json({ status: "success", data: { purchase } });
 };
 
 module.exports = {
