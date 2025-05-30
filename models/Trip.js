@@ -8,7 +8,7 @@ module.exports = (sequelize, DataTypes) => {
     truck_matricule: { type: DataTypes.STRING(50), allowNull: false }, // Changed from truck_id to truck_matricule
     driver_id: { type: DataTypes.STRING(100), allowNull: false },
     seller_id: { type: DataTypes.STRING(100), allowNull: false },
-    assistant_id: { type: DataTypes.STRING(100), allowNull: false },
+    assistant_id: { type: DataTypes.STRING(100), allowNull: true },
     date: { type: DataTypes.DATE },
     zone: { type: DataTypes.STRING(100) },
     waitedAmount: { type: DataTypes.DECIMAL(10, 2), defaultValue: 0 },
