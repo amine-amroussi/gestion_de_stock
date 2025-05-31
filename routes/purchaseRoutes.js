@@ -1,11 +1,7 @@
 const router = require("express").Router();
-const {
-  createPurchase,
-  getAllPurchases,
-  getPurchaseById
-} = require("../controller/purchaseController");
+const { createPurchase, getAllPurchases, getPurchaseById, deletePurchase } = require("../controller/purchaseController");
 
-router.route("/").post(createPurchase).get(getAllPurchases)
-router.route("/:id").get(getPurchaseById);
+router.route("/").get(getAllPurchases).post(createPurchase);
+router.route("/:id").get(getPurchaseById)
 
 module.exports = router;

@@ -1,15 +1,17 @@
-const CustumError = require("../errors");
+const CustomError = require("../errors");
 const { StatusCodes } = require("http-status-codes");
 const db = require("../models");
 
 const createSupplier = async (req, res) => {
   const { name, tel, address } = req.body;
   if (!name || !tel || !address) {
-    throw new CustumError.BadRequestError("Please provide all values");
+    throw new CustomError.BadRequestError("Veuillez fournir toutes les valeurs requises.");
   }
 
   const supplier = await db.Supplier.create({
-    ...req.body,
+    name,
+    tel,
+    address,
   });
 
   res.status(StatusCodes.CREATED).json({ supplier });
@@ -42,48 +44,68 @@ const getAllSuppliers = async (req, res) => {
 };
 
 const getSupplierById = async (req, res) => {
-    const { id: supplierId } = req.params;
-    console.log(supplierId);
-    
-    const supplier = await db.Supplier.findOne({
-      where: { id: supplierId },
-      attributes: ["id", "name", "address", "tel"],
-    });
+  const { id: supplierId } = req.params;
+  const supplier = await db.Supplier.findOne({
+    where: { id: supplierId },
+    attributes: ["id", "name", "address", "tel"],
+  });
 
-    console.log(supplier);
-    
-    if (!supplier) {
-      throw new CustumError.NotFoundError(`No supplier with id : ${supplierId}`);
-    }
-    res.status(StatusCodes.OK).json({ supplier });
+  if (!supplier) {
+    throw new CustomError.NotFoundError(`Aucun fournisseur avec l'identifiant : ${supplierId}`);
+  }
+  res.status(StatusCodes.OK).json({ supplier });
 };
 
 const updateSupplier = async (req, res) => {
-    const { id: supplierId } = req.params;
-    const { name, tel, address } = req.body;    
-    if (!name || !tel || !address) {
-      throw new CustumError.BadRequestError("Please provide all values");
-    }
-    const supplier = await db.Supplier.findOne({
+  const { id: supplierId } = req.params;
+  const { name, tel, address } = req.body;    
+  if (!name || !tel || !address) {
+    throw new CustomError.BadRequestError("Veuillez fournir toutes les valeurs requises.");
+  }
+  const supplier = await db.Supplier.findOne({
+    where: { id: supplierId },
+  });
+  if (!supplier) {
+    throw new CustomError.NotFoundError(`Aucun fournisseur avec l'identifiant : ${supplierId}`);
+  }
+  await db.Supplier.update(
+    { name, tel, address },
+    {
       where: { id: supplierId },
-    });
-    if (!supplier) {
-      throw new CustumError.NotFoundError(`No supplier with id : ${supplierId}`);
     }
-    await db.Supplier.update(
-      { name, tel, address },
-      {
-        where: { id: supplierId },
-      }
-    );
-    const updatedSupplier = await db.Supplier.findOne({
-      where: { id: supplierId },
-      attributes: ["id", "name", "address", "tel"],
-    });
-    if (!updatedSupplier) {
-      throw new CustumError.NotFoundError(`No supplier with id : ${supplierId}`);
+  );
+  const updatedSupplier = await db.Supplier.findOne({
+    where: { id: supplierId },
+    attributes: ["id", "name", "address", "tel"],
+  });
+  if (!updatedSupplier) {
+    throw new CustomError.NotFoundError(`Aucun fournisseur avec l'identifiant : ${supplierId}`);
+  }
+  res.status(StatusCodes.OK).json({ updatedSupplier });
+};
+
+const deleteSupplier = async (req, res) => {
+  const { id: supplierId } = req.params;
+
+  const supplier = await db.Supplier.findOne({
+    where: { id: supplierId },
+  });
+
+  if (!supplier) {
+    throw new CustomError.NotFoundError(`Aucun fournisseur avec l'identifiant : ${supplierId}`);
+  }
+
+  try {
+    await supplier.destroy();
+    res.status(StatusCodes.OK).json({ msg: "Fournisseur supprimé avec succès." });
+  } catch (error) {
+    if (error.name === "SequelizeForeignKeyConstraintError") {
+      throw new CustomError.BadRequestError(
+        "Impossible de supprimer le fournisseur : il est lié à des commandes ou autres entités."
+      );
     }
-    res.status(StatusCodes.OK).json({ updatedSupplier });
+    throw new CustomError.InternalServerError("Erreur lors de la suppression du fournisseur.");
+  }
 };
 
 module.exports = {
@@ -91,4 +113,5 @@ module.exports = {
   getAllSuppliers,
   getSupplierById,
   updateSupplier,
+  deleteSupplier,
 };
