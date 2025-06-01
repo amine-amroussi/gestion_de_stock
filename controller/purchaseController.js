@@ -3,14 +3,19 @@ const { StatusCodes } = require("http-status-codes");
 const db = require("../models");
 
 const createPurchase = async (req, res) => {
-  const { purchaseProducts, purchaseBoxes, purchaseWaste, supplier_id, date } = req.body;
+  const { purchaseProducts, purchaseBoxes, purchaseWaste, supplier_id, date } =
+    req.body;
 
   // Validate inputs
   if (!purchaseProducts || !Array.isArray(purchaseProducts)) {
-    throw new ErrorCustom.BadRequestError("Please provide the purchase products in the request body");
+    throw new ErrorCustom.BadRequestError(
+      "Please provide the purchase products in the request body"
+    );
   }
   if (!purchaseBoxes || !Array.isArray(purchaseBoxes)) {
-    throw new ErrorCustom.BadRequestError("Please provide the purchase boxes in the request body");
+    throw new ErrorCustom.BadRequestError(
+      "Please provide the purchase boxes in the request body"
+    );
   }
   if (purchaseWaste && !Array.isArray(purchaseWaste)) {
     throw new ErrorCustom.BadRequestError("Purchase waste must be an array");
@@ -70,7 +75,10 @@ const createPurchase = async (req, res) => {
     const _product = await db.Product.findOne({
       where: { id: pd.product },
     });
-    total += parseFloat(pd.price) * (parseFloat(_product.capacityByBox) * parseFloat(pd.qtt) + parseFloat(pd.qttUnite));
+    total +=
+      parseFloat(pd.price) *
+      (parseFloat(_product.capacityByBox) * parseFloat(pd.qtt) +
+        parseFloat(pd.qttUnite));
   }
   await db.Purchase.update({ total }, { where: { id: purchase_id } });
 
@@ -84,7 +92,9 @@ const createPurchase = async (req, res) => {
         where: { id: productId },
       });
       if (!existingProduct) {
-        throw new ErrorCustom.NotFoundError(`Product with ID ${productId} not found`);
+        throw new ErrorCustom.NotFoundError(
+          `Product with ID ${productId} not found`
+        );
       }
 
       await db.Product.update(
@@ -123,17 +133,22 @@ const createPurchase = async (req, res) => {
     await Promise.all(
       purchaseWaste.map(async (waste) => {
         const wasteId = waste.product_id;
-        const qtt = waste.qtt;
-
+        const quantity = parseFloat(waste.qtt); // Ensure qtt is a number
+        if (isNaN(quantity) || quantity <= 0) {
+          throw new ErrorCustom.BadRequestError(
+            `La quantité de déchet pour le produit ${wasteId} doit être positive`
+          );
+        }
         const existingWaste = await db.Waste.findOne({
           where: { product: wasteId },
         });
         if (!existingWaste) {
-          throw new ErrorCustom.NotFoundError(`Waste with ID ${wasteId} not found`);
+          throw new ErrorCustom.NotFoundError(
+            `Déchet avec l'ID ${wasteId} introuvable`
+          );
         }
-
         await db.Waste.update(
-          { qtt: existingWaste.qtt - qtt },
+          { qtt: parseFloat(existingWaste.qtt) - quantity }, // Ensure numeric subtraction
           { where: { product: wasteId } }
         );
       })

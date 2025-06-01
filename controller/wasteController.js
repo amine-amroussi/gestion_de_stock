@@ -5,18 +5,23 @@ const { StatusCodes } = require('http-status-codes');
 const createWaste = async (req, res) => {
     const { product, qtt, type } = req.body;
     if (!product || !qtt || !type) {
-        throw new CustomError.BadRequestError('Please provide all values');
+        throw new CustomError.BadRequestError('Veuillez fournir tous les champs requis : produit, quantité et type');
+    }
+    const quantity = parseFloat(qtt); // Convert qtt to number
+    if (isNaN(quantity) || quantity <= 0) {
+        throw new CustomError.BadRequestError('La quantité doit être un nombre positif');
     }
     const waste = await db.Waste.findOne({
         where: { product, type },
     });
     if (waste) {
-        await waste.update({ qtt: waste.qtt + qtt });
+        const newQuantity = parseFloat(waste.qtt) + quantity; // Ensure numeric addition
+        await waste.update({ qtt: newQuantity });
         return res.status(StatusCodes.OK).json({ waste });
     }
     const newWaste = await db.Waste.create({
         product,
-        qtt,
+        qtt: quantity,
         type,
     });
     res.status(StatusCodes.CREATED).json({ newWaste });
@@ -32,7 +37,7 @@ const getAllWastes = async (req, res) => {
     });
 
     if (!wastes.length) {
-        throw new CustomError.NotFoundError('No wastes found');
+        throw new CustomError.NotFoundError('Aucun déchet trouvé');
     }
 
     res.status(StatusCodes.OK).json({
@@ -54,7 +59,7 @@ const getWasteById = async (req, res) => {
     });
 
     if (!waste) {
-        throw new CustomError.NotFoundError(`Waste with ID ${wasteId} not found`);
+        throw new CustomError.NotFoundError(`Déchet avec l'ID ${wasteId} introuvable`);
     }
 
     res.status(StatusCodes.OK).json({ waste });

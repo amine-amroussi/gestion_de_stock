@@ -1,6 +1,7 @@
 const db = require("../models");
 const CustomError = require("../errors");
 const { StatusCodes } = require("http-status-codes");
+const { Op } = require("sequelize");
 
 const getTripById = async (req, res) => {
   try {
@@ -689,7 +690,19 @@ const getRestInLastTruck = async (req, res) => {
 
 const getTrips = async (req, res) => {
   try {
-    const { page = 1, limit = 10 } = req.query;
+    const {
+      page = 1,
+      limit = 10,
+      startDate,
+      endDate,
+      employee,
+      truck,
+      status,
+      sortBy = 'date',
+      sortOrder = 'DESC',
+      search
+    } = req.query;
+
     const parsedPage = parseInt(page, 10);
     const parsedLimit = parseInt(limit, 10);
 
@@ -699,32 +712,94 @@ const getTrips = async (req, res) => {
       );
     }
 
+    const where = {};
+    
+    // Date range filter
+    if (startDate || endDate) {
+      where.date = {};
+      if (startDate) where.date[Op.gte] = new Date(startDate);
+      if (endDate) where.date[Op.lte] = new Date(endDate);
+    }
+
+    // Status filter
+    if (status === 'active') where.isActive = true;
+    else if (status === 'completed') where.isActive = false;
+
+    // Employee filter (search by CIN or name in Driver/Seller/Assistant)
+    let employeeWhere = {};
+    if (employee) {
+      employeeWhere = {
+        [Op.or]: [
+          { cin: { [Op.like]: `%${employee}%` } },
+          { name: { [Op.like]: `%${employee}%` } }
+        ]
+      };
+    }
+
+    // Truck filter
+    if (truck) {
+      where.truck_matricule = { [Op.like]: `%${truck}%` };
+    }
+
+    // General search (zone or ID)
+    if (search) {
+      where[Op.or] = [
+        { zone: { [Op.like]: `%${search}%` } },
+        { id: { [Op.eq]: parseInt(search, 10) || 0 } }
+      ];
+    }
+
+    // Sorting
+    const validSortFields = ['date', 'zone', 'waitedAmount', 'receivedAmount'];
+    const sortField = validSortFields.includes(sortBy) ? sortBy : 'date';
+    const sortDirection = sortOrder.toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
+
     const offset = (parsedPage - 1) * parsedLimit;
     const { count, rows } = await db.Trip.findAndCountAll({
-      where: { isActive: false },
+      where,
       include: [
-        { model: db.Truck, as: "TruckAssociation", attributes: ["matricule"] },
-        { model: db.Employee, as: "DriverAssociation", attributes: ["name"] },
-        { model: db.Employee, as: "SellerAssociation", attributes: ["name"] },
+        {
+          model: db.Truck,
+          as: "TruckAssociation",
+          attributes: ["matricule"]
+        },
+        {
+          model: db.Employee,
+          as: "DriverAssociation",
+          attributes: ["name"],
+          where: employeeWhere.cin ? employeeWhere : undefined
+        },
+        {
+          model: db.Employee,
+          as: "SellerAssociation",
+          attributes: ["name"],
+          where: employeeWhere.cin ? employeeWhere : undefined
+        },
+        {
+          model: db.Employee,
+          as: "AssistantAssociation",
+          attributes: ["name"],
+          where: employeeWhere.cin ? employeeWhere : undefined
+        }
       ],
+      order: [[sortField, sortDirection]],
       limit: parsedLimit,
       offset,
+      distinct: true
     });
 
     res.status(StatusCodes.OK).json({
       trips: rows,
       totalItems: count,
       totalPages: Math.ceil(count / parsedLimit),
-      currentPage: parsedPage,
+      currentPage: parsedPage
     });
   } catch (error) {
     console.error("getTrips error:", error.message, error.stack);
-    res
-      .status(StatusCodes.INTERNAL_SERVER_ERROR)
-      .json({ message: "Erreur lors de la récupération des tournées." });
+    const status = error.statusCode || StatusCodes.INTERNAL_SERVER_ERROR;
+    res.status(status).json({ message: error.message });
   }
 };
-
 const generateInvoice = async (req, res) => {
   try {
     const { id: tripId } = req.params;
