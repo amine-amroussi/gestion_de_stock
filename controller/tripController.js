@@ -469,7 +469,7 @@ const finishTrip = async (req, res) => {
       })
     );
 
-    console.log("Fetching TripProducts for stock update...");
+    console.log("Fetching TripProducts for validation...");
     const tripProductsData = await db.TripProduct.findAll({
       where: { trip: parsedTripId },
       transaction,
@@ -479,33 +479,18 @@ const finishTrip = async (req, res) => {
       transaction,
     });
 
-    console.log("Updating Product stock...");
+    // Validate quantities but do not update product stock
     await Promise.all(
       tripProductsData.map(async (tripProduct) => {
-        const product = await db.Product.findOne({
-          where: { id: tripProduct.product },
-          transaction,
-        });
         if (tripProduct.qttReutour > tripProduct.qttOut) {
           throw new CustomError.BadRequestError(
-            `La quantité retournée du produit ${tripProduct.designation} est supérieure à la quantité sortie`
+            `La quantité retournée du produit ${tripProduct.product} est supérieure à la quantité sortie`
           );
-        }
-        if (product) {
-          console.log(
-            `Updating Product stock for product ${tripProduct.product}:`,
-            {
-              stockIncrease: tripProduct.qttReutour,
-              uniteInStockIncrease: tripProduct.qttReutourUnite,
-            }
-          );
-          product.stock += tripProduct.qttReutour;
-          product.uniteInStock += tripProduct.qttReutourUnite;
-          await product.save({ transaction });
         }
       })
     );
 
+    // Update box stock
     console.log("Updating Box stock...");
     await Promise.all(
       tripBoxesData.map(async (tripBox) => {
@@ -525,7 +510,7 @@ const finishTrip = async (req, res) => {
             emptyIncrease: tripBox.qttIn,
           });
           box.inStock += tripBox.qttIn;
-          box.sent -= tripBox.qttOut;
+          box.sent += tripBox.qttIn;
           box.empty += tripBox.qttIn;
           await box.save({ transaction });
         }
@@ -639,6 +624,117 @@ const finishTrip = async (req, res) => {
       status: error.statusCode,
       details: error.details,
       requestBody: req.body,
+    });
+    const status = error.statusCode || StatusCodes.INTERNAL_SERVER_ERROR;
+    res.status(status).json({ message: error.message });
+  }
+};
+
+const emptyTruck = async (req, res) => {
+  const transaction = await db.sequelize.transaction();
+  try {
+    const { matricule } = req.params;
+    console.log(`Emptying truck with matricule: ${matricule}`);
+
+    // Find the last completed trip for the truck
+    const lastTrip = await db.Trip.findOne({
+      where: { truck_matricule: matricule, isActive: false },
+      order: [["date", "DESC"]],
+      transaction,
+    });
+
+    if (!lastTrip) {
+      throw new CustomError.NotFoundError(
+        `Aucune tournée terminée trouvée pour le camion avec matricule ${matricule}`
+      );
+    }
+
+    // Fetch TripProducts and TripBoxes for the last trip
+    const tripProducts = await db.TripProduct.findAll({
+      where: { trip: lastTrip.id },
+      include: [
+        {
+          model: db.Product,
+          as: "ProductAssociation",
+          attributes: ["id", "designation"],
+        },
+      ],
+      attributes: ["product", "qttReutour", "qttReutourUnite"],
+      transaction,
+    });
+
+    const tripBoxes = await db.TripBox.findAll({
+      where: { trip: lastTrip.id },
+      include: [
+        {
+          model: db.Box,
+          as: "BoxAssociation",
+          attributes: ["id", "designation"],
+        },
+      ],
+      attributes: ["box", "qttIn"],
+      transaction,
+    });
+
+    // Update product stock
+    await Promise.all(
+      tripProducts.map(async (tripProduct) => {
+        const product = await db.Product.findOne({
+          where: { id: tripProduct.product },
+          transaction,
+        });
+        if (product) {
+          console.log(`Updating Product stock for product ${tripProduct.product}:`, {
+            stockIncrease: tripProduct.qttReutour,
+            uniteInStockIncrease: tripProduct.qttReutourUnite,
+          });
+          product.stock += tripProduct.qttReutour || 0;
+          product.uniteInStock += tripProduct.qttReutourUnite || 0;
+          await product.save({ transaction });
+        }
+      })
+    );
+
+    // Update box stock (already handled in finishTrip, but ensure consistency)
+    await Promise.all(
+      tripBoxes.map(async (tripBox) => {
+        const box = await db.Box.findOne({
+          where: { id: tripBox.box },
+          transaction,
+        });
+        if (box) {
+          console.log(`Updating Box stock for box ${tripBox.box}:`, {
+            inStockIncrease: tripBox.qttIn,
+          });
+          box.inStock += tripBox.qttIn || 0;
+          box.sent += tripBox.qttIn || 0;
+          box.empty += tripBox.qttIn || 0;
+          await box.save({ transaction });
+        }
+      })
+    );
+
+    // Clear the returned quantities from the last trip
+    await db.TripProduct.update(
+      { qttReutour: 0, qttReutourUnite: 0 },
+      { where: { trip: lastTrip.id }, transaction }
+    );
+
+    await db.TripBox.update(
+      { qttIn: 0 },
+      { where: { trip: lastTrip.id }, transaction }
+    );
+
+    await transaction.commit();
+    console.log(`Truck ${matricule} emptied successfully`);
+    res.status(StatusCodes.OK).json({
+      message: `Camion ${matricule} vidé avec succès. Tout a été retourné au stock.`,
+    });
+  } catch (error) {
+    await transaction.rollback();
+    console.error("emptyTruck error:", {
+      message: error.message,
+      stack: error.stack,
     });
     const status = error.statusCode || StatusCodes.INTERNAL_SERVER_ERROR;
     res.status(status).json({ message: error.message });
@@ -800,6 +896,7 @@ const getTrips = async (req, res) => {
     res.status(status).json({ message: error.message });
   }
 };
+
 const generateInvoice = async (req, res) => {
   try {
     const { id: tripId } = req.params;
@@ -996,6 +1093,233 @@ const getAllEmployees = async (req, res) => {
   }
 };
 
+const transferProducts = async (req, res) => {
+  const transaction = await db.sequelize.transaction();
+  try {
+    const {
+      sourceTripId,
+      destinationTripId,
+      tripProducts = [],
+      tripBoxes = [],
+    } = req.body;
+
+    console.log("Received transferProducts request:", {
+      sourceTripId,
+      destinationTripId,
+      tripProducts,
+      tripBoxes,
+    });
+
+    // Validate inputs
+    if (!sourceTripId || !destinationTripId) {
+      throw new CustomError.BadRequestError(
+        "Source et destination de la tournée sont requis."
+      );
+    }
+
+    const parsedSourceTripId = parseInt(sourceTripId.toString(), 10);
+    const parsedDestinationTripId = parseInt(destinationTripId.toString(), 10);
+    if (isNaN(parsedSourceTripId) || isNaN(parsedDestinationTripId)) {
+      throw new CustomError.BadRequestError(
+        "Les IDs de tournée doivent être des nombres."
+      );
+    }
+
+    // Fetch source trip
+    const sourceTrip = await db.Trip.findOne({
+      where: { id: parsedSourceTripId },
+      include: [
+        {
+          model: db.TripProduct,
+          as: "TripProducts",
+          attributes: ["product", "qttOut", "qttOutUnite", "qttReutour", "qttReutourUnite"],
+        },
+        {
+          model: db.TripBox,
+          as: "TripBoxes",
+          attributes: ["box", "qttOut", "qttIn"],
+        },
+      ],
+      transaction,
+    });
+
+    if (!sourceTrip) {
+      throw new CustomError.NotFoundError(
+        `Tournée source avec ID ${parsedSourceTripId} non trouvée.`
+      );
+    }
+
+    // Fetch destination trip
+    const destinationTrip = await db.Trip.findOne({
+      where: { id: parsedDestinationTripId, isActive: true },
+      transaction,
+    });
+
+    if (!destinationTrip) {
+      throw new CustomError.NotFoundError(
+        `Tournée destination avec ID ${parsedDestinationTripId} non trouvée ou non active.`
+      );
+    }
+
+    // Process TripProducts
+    if (tripProducts.length > 0) {
+      await Promise.all(
+        tripProducts.map(async (transferProduct) => {
+          const { product_id, additionalQttOut = 0, additionalQttOutUnite = 0 } = transferProduct;
+          const sourceProduct = sourceTrip.TripProducts.find(
+            (tp) => Number(tp.product) === Number(product_id)
+          );
+
+          if (!sourceProduct) {
+            throw new CustomError.BadRequestError(
+              `Produit ID ${product_id} non trouvé dans la tournée source.`
+            );
+          }
+
+          // Calculate remaining quantities
+          const remainingQtt =
+            (sourceProduct.qttOut || 0) - (sourceProduct.qttReutour || 0);
+          const remainingQttUnite =
+            (sourceProduct.qttOutUnite || 0) - (sourceProduct.qttReutourUnite || 0);
+
+          if (remainingQtt <= 0 && remainingQttUnite <= 0) {
+            throw new CustomError.BadRequestError(
+              `Aucune quantité restante pour le produit ID ${product_id} dans la tournée source.`
+            );
+          }
+
+          // Validate product exists
+          const product = await db.Product.findOne({
+            where: { id: product_id },
+            transaction,
+          });
+          if (!product) {
+            throw new CustomError.NotFoundError(
+              `Produit avec ID ${product_id} non trouvé.`
+            );
+          }
+
+          // Check if product already exists in destination trip
+          let destinationProduct = await db.TripProduct.findOne({
+            where: { trip: parsedDestinationTripId, product: product_id },
+            transaction,
+          });
+
+          if (destinationProduct) {
+            // Update existing record
+            destinationProduct.qttOut =
+              (destinationProduct.qttOut || 0) +
+              remainingQtt +
+              (parseInt(additionalQttOut, 10) || 0);
+            destinationProduct.qttOutUnite =
+              (destinationProduct.qttOutUnite || 0) +
+              remainingQttUnite +
+              (parseInt(additionalQttOutUnite, 10) || 0);
+            await destinationProduct.save({ transaction });
+            console.log(`Updated TripProduct ${product_id} in destination trip.`);
+          } else {
+            // Create new record
+            await db.TripProduct.create(
+              {
+                trip: parsedDestinationTripId,
+                product: product_id,
+                qttOut: remainingQtt + (parseInt(additionalQttOut, 10) || 0),
+                qttOutUnite:
+                  remainingQttUnite + (parseInt(additionalQttOutUnite, 10) || 0),
+                qttReutour: 0,
+                qttReutourUnite: 0,
+              },
+              { transaction }
+            );
+            console.log(`Created TripProduct ${product_id} in destination trip.`);
+          }
+        })
+      );
+    }
+
+    // Process TripBoxes
+    if (tripBoxes.length > 0) {
+      await Promise.all(
+        tripBoxes.map(async (transferBox) => {
+          const { box_id, additionalQttOut = 0 } = transferBox;
+          const sourceBox = sourceTrip.TripBoxes.find(
+            (tb) => Number(tb.box) === Number(box_id)
+          );
+
+          if (!sourceBox) {
+            throw new CustomError.BadRequestError(
+              `Boîte ID ${box_id} non trouvée dans la tournée source.`
+            );
+          }
+
+          // Calculate remaining quantity
+          const remainingQtt = (sourceBox.qttOut || 0) - (sourceBox.qttIn || 0);
+
+          if (remainingQtt <= 0) {
+            throw new CustomError.BadRequestError(
+              `Aucune quantité restante pour la boîte ID ${box_id} dans la tournée source.`
+            );
+          }
+
+          // Validate box exists
+          const box = await db.Box.findOne({
+            where: { id: box_id },
+            transaction,
+          });
+          if (!box) {
+            throw new CustomError.NotFoundError(
+              `Boîte avec ID ${box_id} non trouvée.`
+            );
+          }
+
+          // Check if box already exists in destination trip
+          let destinationBox = await db.TripBox.findOne({
+            where: { trip: parsedDestinationTripId, box: box_id },
+            transaction,
+          });
+
+          if (destinationBox) {
+            // Update existing record
+            destinationBox.qttOut =
+              (destinationBox.qttOut || 0) +
+              remainingQtt +
+              (parseInt(additionalQttOut, 10) || 0);
+            await destinationBox.save({ transaction });
+            console.log(`Updated TripBox ${box_id} in destination trip.`);
+          } else {
+            // Create new record
+            await db.TripBox.create(
+              {
+                trip: parsedDestinationTripId,
+                box: box_id,
+                qttOut: remainingQtt + (parseInt(additionalQttOut, 10) || 0),
+                qttIn: 0,
+              },
+              { transaction }
+            );
+            console.log(`Created TripBox ${box_id} in destination trip.`);
+          }
+        })
+      );
+    }
+
+    await transaction.commit();
+    console.log("Transfer transaction committed successfully");
+    res.status(StatusCodes.OK).json({
+      message: "Produits et boîtes transférés avec succès.",
+    });
+  } catch (error) {
+    await transaction.rollback();
+    console.error("transferProducts error:", {
+      message: error.message,
+      stack: error.stack,
+      requestBody: req.body,
+    });
+    const status = error.statusCode || StatusCodes.INTERNAL_SERVER_ERROR;
+    res.status(status).json({ errorMessage: error.message });
+  }
+};
+
 module.exports = {
   startTrip,
   finishTrip,
@@ -1006,4 +1330,5 @@ module.exports = {
   generateInvoice,
   getAllProducts,
   getAllEmployees,
+  emptyTruck,
 };

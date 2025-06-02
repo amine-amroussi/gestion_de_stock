@@ -122,7 +122,7 @@ const createPurchase = async (req, res) => {
       }
 
       await db.Box.update(
-        { inStock: existingBox.inStock + qttIn - qttOut },
+        { inStock: existingBox.inStock + qttIn , empty: existingBox.empty - qttOut },
         { where: { id: boxId } }
       );
     })

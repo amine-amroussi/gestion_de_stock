@@ -8,8 +8,9 @@ const {
   getActiveTrips,
   getTripById,
   generateInvoice,
-  getAllProducts, // New function
-  getAllEmployees, // New function
+  getAllProducts,
+  getAllEmployees,
+  emptyTruck,
 } = require("../controller/tripController");
 
 // Routes for trip management
@@ -22,5 +23,6 @@ router.get("/last/:id", getRestInLastTruck); // Get last trip for a truck
 router.get("/invoice/:id", generateInvoice); // Generate invoice for a trip
 router.get("/products/all", getAllProducts); // Get all products without pagination
 router.get("/employees/all", getAllEmployees); // Get all employees without pagination
+router.post("/empty/:matricule", emptyTruck); // Empty truck by matricule
 
 module.exports = router;
