@@ -65,8 +65,83 @@ const getWasteById = async (req, res) => {
     res.status(StatusCodes.OK).json({ waste });
 };
 
+const getWastes = async (req, res) => {
+    const waistes  = await db.Waste.findAll();
+    res.status(StatusCodes.OK).json({ waistes });
+};
+
+const sendToSupplier = async (req, res) => {
+  const { id } = req.params;
+  const { boxes, wastes } = req.body;
+
+  try {
+    const purchase = await db.Purchase.findByPk(id, {
+      include: [
+        { model: db.Supplier, as: 'SupplierAssociation' },
+        { model: db.PurchaseBox, as: 'BoxAssociation', include: [{ model: db.Box, as: 'BoxAssociation' }] },
+        { model: db.PurchaseWaste, as: 'purchaseWaste', include: [{ model: db.Product, as: 'ProductAssociation' }] },
+      ],
+    });
+
+    if (!purchase) {
+      throw new CustomError.NotFoundError(`Achat avec l'ID ${id} introuvable`);
+    }
+
+    if (!boxes && !wastes) {
+      throw new CustomError.BadRequestError('Aucune caisse ou déchet fourni');
+    }
+
+    // Validate boxes
+    if (boxes) {
+      for (const box of boxes) {
+        const dbBox = purchase.BoxAssociation.find(b => b.box_id === box.box_id);
+        if (!dbBox) {
+          throw new CustomError.BadRequestError(`Caisse ID ${box.box_id} non trouvée dans l'achat`);
+        }
+        if (box.qttIn !== dbBox.qttIn || box.qttOut !== dbBox.qttOut) {
+          throw new CustomError.BadRequestError(`Données de caisse ID ${box.box_id} non conformes`);
+        }
+      }
+    }
+
+    // Validate wastes
+    if (wastes) {
+      for (const waste of wastes) {
+        const dbWaste = purchase.purchaseWaste.find(w => w.product_id === waste.product_id && w.type === waste.type);
+        if (!dbWaste) {
+          throw new CustomError.BadRequestError(`Déchet ${waste.product_id} (${waste.type}) non trouvé dans l'achat`);
+        }
+        if (waste.qtt !== dbWaste.qtt) {
+          throw new CustomError.BadRequestError(`Quantité de déchet ${waste.product_id} non conforme`);
+        }
+      }
+    }
+
+    // Placeholder: Implement supplier notification (e.g., email, database log)
+    console.log(`Sending to supplier for purchase ${id}:`, { boxes, wastes, supplier: purchase.SupplierAssociation });
+
+    // Example: Log to a notification table (optional)
+    await db.Notification.create({
+      purchase_id: id,
+      supplier_id: purchase.supplier_id,
+      data: JSON.stringify({ boxes, wastes }),
+      status: 'pending',
+      created_at: new Date(),
+    });
+
+    res.status(StatusCodes.OK).json({ message: 'Données envoyées au fournisseur avec succès' });
+  } catch (error) {
+    console.error('sendToSupplier error:', error);
+    const status = error.statusCode || StatusCodes.INTERNAL_SERVER_ERROR;
+    res.status(status).json({ message: error.message });
+  }
+};
+
+
 module.exports = {
     createWaste,
     getAllWastes,
     getWasteById,
+    getWastes,
+    sendToSupplier
 };

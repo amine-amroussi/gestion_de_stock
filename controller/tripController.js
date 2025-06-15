@@ -2,6 +2,7 @@ const db = require("../models");
 const CustomError = require("../errors");
 const { StatusCodes } = require("http-status-codes");
 const { Op } = require("sequelize");
+const Product = require("../models/Product");
 
 const getTripById = async (req, res) => {
   try {
@@ -76,7 +77,7 @@ const getTripById = async (req, res) => {
                 {
                   model: db.Product,
                   as: "ProductAssociation",
-                  attributes: ["designation"],
+                  attributes: ["designation", "priceUnite"],
                 },
               ],
             },
@@ -137,8 +138,14 @@ const getTripById = async (req, res) => {
         }
         return tp;
       }),
-      totalCharges: plainTrip.TripCharges.reduce((sum, charge) => sum + (charge.amount || 0), 0),
-      totalWastes: plainTrip.TripWastes.reduce((sum, waste) => sum + (waste.qtt || 0), 0),
+      totalCharges: plainTrip.TripCharges.reduce(
+        (sum, charge) => sum + (charge.amount || 0),
+        0
+      ),
+      totalWastes: plainTrip.TripWastes.reduce(
+        (sum, waste) => sum + (waste.qtt || 0),
+        0
+      ),
     };
 
     res.status(StatusCodes.OK).json({ trip: tripWithComputedUnits });
@@ -199,22 +206,35 @@ const startTrip = async (req, res) => {
       tripBoxes,
     } = req.body;
 
+    console.log("Received startTrip request:", {
+      truck_matricule,
+      driver_id,
+      seller_id,
+      assistant_id,
+      date,
+      zone,
+      tripProducts,
+      tripBoxes,
+    });
+
+    // Validate required fields
+    if (!truck_matricule || !driver_id || !seller_id || !date || !zone) {
+      throw new CustomError.BadRequestError(
+        "Tous les champs requis doivent être remplis."
+      );
+    }
+
+    // Check if truck is already on an active trip
     const ifTheTruckIsGo = await db.Trip.findOne({
       where: { isActive: true, truck_matricule },
       include: [
         { model: db.Truck, as: "TruckAssociation", attributes: ["matricule"] },
       ],
+      transaction,
     });
 
     if (ifTheTruckIsGo) {
-      throw new CustomError.BadRequestError("Cette Camion est deja sortie");
-    }
-
-    // Validate required fields (including assistant_id)
-    if (!truck_matricule || !driver_id || !seller_id || !date || !zone) {
-      throw new CustomError.BadRequestError(
-        "Tous les champs requis doivent être remplis, y compris l'assistant."
-      );
+      throw new CustomError.BadRequestError("Ce camion est déjà sorti");
     }
 
     // Validate truck
@@ -250,60 +270,79 @@ const startTrip = async (req, res) => {
       );
     }
 
-    // Validate assistant (required)
-    const assistant = await db.Employee.findOne({
-      where: { cin: assistant_id },
-      transaction,
-    });
-    // if (!assistant) {
-    //   throw new CustomError.NotFoundError(`Assistant avec CIN ${assistant_id} non trouvé.`);
-    // }
+    // Validate assistant (optional)
+    const assistant = assistant_id
+      ? await db.Employee.findOne({
+          where: { cin: assistant_id },
+          transaction,
+        })
+      : null;
 
     // Validate tripProducts
-    if (tripProducts && tripProducts.length > 0) {
-      for (const p of tripProducts) {
-        const product = await db.Product.findOne({
-          where: { id: p.product_id },
-          transaction,
-        });
-        if (!product) {
-          throw new CustomError.NotFoundError(
-            `Produit avec ID ${p.product_id} non trouvé.`
-          );
-        }
-      }
-    } else {
+    if (!tripProducts || !Array.isArray(tripProducts) || tripProducts.length === 0) {
       throw new CustomError.BadRequestError(
         "Au moins un produit est requis pour démarrer une tournée."
       );
     }
 
-    // Validate tripBoxes
-    if (tripBoxes && tripBoxes.length > 0) {
-      for (const b of tripBoxes) {
-        const box = await db.Box.findOne({
-          where: { id: b.box_id },
-          transaction,
-        });
-        if (!box) {
-          throw new CustomError.NotFoundError(
-            `Boîte avec ID ${b.box_id} non trouvée.`
-          );
-        }
+    for (const p of tripProducts) {
+      if (!p.product_id || p.qttOut < 0 || p.qttOutUnite < 0) {
+        throw new CustomError.BadRequestError(
+          `Produit ID ${p.product_id} invalide ou quantités négatives.`
+        );
       }
-    } else {
+      const product = await db.Product.findOne({
+        where: { id: p.product_id },
+        transaction,
+      });
+      if (!product) {
+        throw new CustomError.NotFoundError(
+          `Produit avec ID ${p.product_id} non trouvé.`
+        );
+      }
+      if (p.qttOut > product.stock || p.qttOutUnite > product.uniteInStock) {
+        throw new CustomError.BadRequestError(
+          `Stock insuffisant pour le produit ID ${p.product_id}. Stock: ${product.stock} caisses, ${product.uniteInStock} unités.`
+        );
+      }
+    }
+
+    // Validate tripBoxes
+    if (!tripBoxes || !Array.isArray(tripBoxes) || tripBoxes.length === 0) {
       throw new CustomError.BadRequestError(
         "Au moins une boîte est requise pour démarrer une tournée."
       );
     }
 
-    // Create the trip
+    for (const b of tripBoxes) {
+      if (!b.box_id || b.qttOut < 0) {
+        throw new CustomError.BadRequestError(
+          `Boîte ID ${b.box_id} invalide ou quantité négative.`
+        );
+      }
+      const box = await db.Box.findOne({
+        where: { id: b.box_id },
+        transaction,
+      });
+      if (!box) {
+        throw new CustomError.NotFoundError(
+          `Boîte avec ID ${b.box_id} non trouvée.`
+        );
+      }
+      if (b.qttOut > box.inStock) {
+        throw new CustomError.BadRequestError(
+          `Stock insuffisant pour la boîte ID ${b.box_id}. Stock: ${box.inStock}.`
+        );
+      }
+    }
+
+    // Create trip
     const trip = await db.Trip.create(
       {
         truck_matricule,
         driver_id,
         seller_id,
-        assistant_id: assistant_id || null, // No need for || null since it's required
+        assistant_id: assistant_id || null,
         date,
         zone,
         isActive: true,
@@ -313,29 +352,94 @@ const startTrip = async (req, res) => {
     console.log("Trip created with ID:", trip.id, "isActive:", trip.isActive);
 
     // Create TripProducts
-    if (tripProducts && tripProducts.length > 0) {
-      const productRecords = tripProducts.map((p) => ({
-        trip: trip.id,
-        product: p.product_id,
-        qttOut: p.qttOut,
-        qttOutUnite: p.qttOutUnite || 0,
-      }));
-      await db.TripProduct.bulkCreate(productRecords, { transaction });
-      console.log("TripProducts created for trip:", trip.id);
-    }
+    const productRecords = tripProducts.map((p) => ({
+      trip: trip.id,
+      product: p.product_id,
+      qttOut: p.qttOut,
+      qttOutUnite: p.qttOutUnite || 0,
+    }));
+    const tripProductsCreated = await db.TripProduct.bulkCreate(productRecords, {
+      transaction,
+    });
+    console.log("TripProducts created:", tripProductsCreated.map(tp => tp.toJSON()));
 
     // Create TripBoxes
-    if (tripBoxes && tripBoxes.length > 0) {
-      const boxRecords = tripBoxes.map((b) => ({
-        trip: trip.id,
-        box: b.box_id,
-        qttOut: b.qttOut,
-      }));
-      await db.TripBox.bulkCreate(boxRecords, { transaction });
-      console.log("TripBoxes created for trip:", trip.id);
-    }
+    const boxRecords = tripBoxes.map((b) => ({
+      trip: trip.id,
+      box: b.box_id,
+      qttOut: b.qttOut,
+    }));
+    const tripBoxesCreated = await db.TripBox.bulkCreate(boxRecords, { transaction });
+    console.log("TripBoxes created:", tripBoxesCreated.map(tb => tb.toJSON()));
 
-    // Fetch the full trip with associations
+    // Update product quantities
+    console.log("Updating product quantities...");
+    if (!tripProductsCreated || tripProductsCreated.length === 0) {
+      throw new CustomError.BadRequestError("Aucun produit créé pour la mise à jour du stock.");
+    }
+    await Promise.all(
+      tripProductsCreated.map(async (tripProduct) => {
+        const product = await db.Product.findOne({
+          where: { id: tripProduct.product },
+          transaction,
+        });
+        if (product) {
+          console.log(`Updating product ${tripProduct.product}:`, {
+            stockBefore: product.stock,
+            uniteInStockBefore: product.uniteInStock,
+            qttOut: tripProduct.qttOut,
+            qttOutUnite: tripProduct.qttOutUnite,
+          });
+          product.stock -= tripProduct.qttOut;
+          product.uniteInStock -= tripProduct.qttOutUnite;
+          if (product.stock < 0 || product.uniteInStock < 0) {
+            throw new CustomError.BadRequestError(
+              `Stock négatif non autorisé pour le produit ID ${tripProduct.product}.`
+            );
+          }
+          await product.save({ transaction });
+          console.log(`Updated product ${tripProduct.product}:`, {
+            stockAfter: product.stock,
+            uniteInStockAfter: product.uniteInStock,
+          });
+        }
+      })
+    );
+
+    // Update box quantities
+    console.log("Updating box quantities...");
+    if (!tripBoxesCreated || tripBoxesCreated.length === 0) {
+      throw new CustomError.BadRequestError("Aucune boîte créée pour la mise à jour du stock.");
+    }
+    await Promise.all(
+      tripBoxesCreated.map(async (tripBox) => {
+        const box = await db.Box.findOne({
+          where: { id: tripBox.box },
+          transaction,
+        });
+        if (box) {
+          console.log(`Updating box ${tripBox.box}:`, {
+            inStockBefore: box.inStock,
+            sentBefore: box.sent,
+            qttOut: tripBox.qttOut,
+          });
+          box.inStock -= tripBox.qttOut;
+          box.sent += tripBox.qttOut;
+          if (box.inStock < 0) {
+            throw new CustomError.BadRequestError(
+              `Stock négatif non autorisé pour la boîte ID ${tripBox.box}.`
+            );
+          }
+          await box.save({ transaction });
+          console.log(`Updated box ${tripBox.box}:`, {
+            inStockAfter: box.inStock,
+            sentAfter: box.sent,
+          });
+        }
+      })
+    );
+
+    // Fetch full trip details
     const fullTrip = await db.Trip.findOne({
       where: { id: trip.id },
       include: [
@@ -357,9 +461,11 @@ const startTrip = async (req, res) => {
     res.status(StatusCodes.CREATED).json({ trip: fullTrip });
   } catch (error) {
     await transaction.rollback();
-    console.log(error);
-
-    console.error("startTrip error:", error.message, error.stack);
+    console.error("startTrip error:", {
+      message: error.message,
+      stack: error.stack,
+      requestBody: req.body,
+    });
     const status = error.statusCode || StatusCodes.INTERNAL_SERVER_ERROR;
     res.status(status).json({ message: error.message });
   }
@@ -406,6 +512,14 @@ const finishTrip = async (req, res) => {
     }
     console.log("Found trip:", trip.toJSON());
 
+    const wasteByProduct = tripWastes.reduce((acc, waste) => {
+      const productId = Number(waste.product);
+      acc[productId] = (acc[productId] || 0) + (parseInt(waste.qtt) || 0);
+      return acc;
+    }, {});
+
+    console.log("Waste quantities by product:", wasteByProduct);
+
     console.log("Updating TripProducts...");
     await Promise.all(
       tripProducts.map(async (tripProduct) => {
@@ -433,15 +547,43 @@ const finishTrip = async (req, res) => {
             `Product with ID ${tripProduct.product_id} not found`
           );
         }
+
+        const wasteQtt = wasteByProduct[tripProduct.product_id] || 0;
+
         console.log(`Updating TripProduct ${tripProduct.product_id}:`, {
           qttReutour: tripProduct.qttReutour,
           qttReutourUnite: tripProduct.qttReutourUnite,
+          wasteQtt,
         });
         product.qttReutour = tripProduct.qttReutour;
         product.qttReutourUnite = tripProduct.qttReutourUnite;
+
+        const totalUnitsOut =
+          _product.capacityByBox * (product.qttOut || 0) +
+          (product.qttOutUnite || 0);
+        const totalUnitsReturned =
+          _product.capacityByBox * (tripProduct.qttReutour || 0) +
+          (tripProduct.qttReutourUnite || 0);
+        const totalUnitsWasted = wasteQtt;
         product.qttVendu =
-          _product.capacityByBox * (product.qttOut - tripProduct.qttReutour) +
-          (product.qttOutUnite - tripProduct.qttReutourUnite);
+          totalUnitsOut - totalUnitsReturned - totalUnitsWasted;
+
+        if (product.qttVendu < 0) {
+          throw new CustomError.BadRequestError(
+            `Quantité vendue négative pour le produit ${tripProduct.product_id} après déduction des déchets.`
+          );
+        }
+        if (tripProduct.qttReutour > product.qttOut) {
+          throw new CustomError.BadRequestError(
+            `La quantité retournée du produit ${tripProduct.product_id} est supérieure à la quantité sortie (caisses).`
+          );
+        }
+        if (tripProduct.qttReutourUnite + wasteQtt > product.qttOutUnite) {
+          throw new CustomError.BadRequestError(
+            `La quantité retournée (unités) plus déchets pour le produit ${tripProduct.product_id} est supérieure à la quantité sortie (unités).`
+          );
+        }
+
         await product.save({ transaction });
       })
     );
@@ -469,7 +611,7 @@ const finishTrip = async (req, res) => {
       })
     );
 
-    console.log("Fetching TripProducts for validation...");
+    console.log("Fetching TripProducts and TripBoxes for validation...");
     const tripProductsData = await db.TripProduct.findAll({
       where: { trip: parsedTripId },
       transaction,
@@ -479,18 +621,6 @@ const finishTrip = async (req, res) => {
       transaction,
     });
 
-    // Validate quantities but do not update product stock
-    await Promise.all(
-      tripProductsData.map(async (tripProduct) => {
-        if (tripProduct.qttReutour > tripProduct.qttOut) {
-          throw new CustomError.BadRequestError(
-            `La quantité retournée du produit ${tripProduct.product} est supérieure à la quantité sortie`
-          );
-        }
-      })
-    );
-
-    // Update box stock
     console.log("Updating Box stock...");
     await Promise.all(
       tripBoxesData.map(async (tripBox) => {
@@ -498,22 +628,52 @@ const finishTrip = async (req, res) => {
           where: { id: tripBox.box },
           transaction,
         });
-        if (tripBox.qttIn < tripBox.qttOut) {
-          console.log(
-            `Warning: qttIn (${tripBox.qttIn}) is less than qttOut (${tripBox.qttOut}) for box ${tripBox.box}`
+        if (!box) {
+          throw new CustomError.NotFoundError(
+            `Box with ID ${tripBox.box} not found`
           );
         }
-        if (box) {
-          console.log(`Updating Box stock for box ${tripBox.box}:`, {
-            inStockIncrease: tripBox.qttIn,
-            sentDecrease: tripBox.qttOut,
-            emptyIncrease: tripBox.qttIn,
-          });
-          box.inStock += tripBox.qttIn;
-          box.sent += tripBox.qttIn;
-          box.empty += tripBox.qttIn;
-          await box.save({ transaction });
+        console.log(`Box validation for box ${tripBox.box}:`, {
+          qttIn: tripBox.qttIn,
+          qttOut: tripBox.qttOut,
+          currentSent: box.sent,
+          emptyBefore: box.empty,
+        });
+        if (tripBox.qttIn > tripBox.qttOut) {
+          throw new CustomError.BadRequestError(
+            `Returned quantity (${tripBox.qttIn}) for box ID ${tripBox.box} exceeds sent quantity (${tripBox.qttOut})`
+          );
         }
+        if (tripBox.qttIn < 0) {
+          throw new CustomError.BadRequestError(
+            `Negative returned quantity (${tripBox.qttIn}) for box ID ${tripBox.box} not allowed`
+          );
+        }
+        const newSent = box.sent - tripBox.qttIn;
+        if (newSent < 0) {
+          console.warn(
+            `Warning: Updating box ${tripBox.box} would result in negative sent value`,
+            {
+              currentSent: box.sent,
+              qttIn: tripBox.qttIn,
+              newSent,
+            }
+          );
+          // Proceed without throwing error to debug
+        }
+        console.log(`Updating Box stock for box ${tripBox.box}:`, {
+          emptyBefore: box.empty,
+          sentBefore: box.sent,
+          emptyIncrease: tripBox.qttIn,
+          sentDecrease: tripBox.qttIn,
+        });
+        box.empty += tripBox.qttIn;
+        box.sent -= tripBox.qttIn;
+        await box.save({ transaction });
+        console.log(`Updated Box stock for box ${tripBox.box}:`, {
+          emptyAfter: box.empty,
+          sentAfter: box.sent,
+        });
       })
     );
 
@@ -530,6 +690,7 @@ const finishTrip = async (req, res) => {
     );
 
     let tripWastesData = [];
+    let totalWasteCost = 0;
     if (tripWastes && tripWastes.length > 0) {
       console.log("Processing TripWastes...");
       tripWastesData = await Promise.all(
@@ -562,6 +723,14 @@ const finishTrip = async (req, res) => {
               { transaction }
             );
           }
+          const product = await db.Product.findOne({
+            where: { id: waste.product },
+            attributes: ["priceUnite"],
+            transaction,
+          });
+          if (product) {
+            totalWasteCost += (waste.qtt || 0) * (product.priceUnite || 0);
+          }
           return createdWaste;
         })
       );
@@ -572,7 +741,7 @@ const finishTrip = async (req, res) => {
       console.log("Processing TripCharges...");
       tripChargesData = await Promise.all(
         tripCharges.map(async (tripCharge) => {
-          const createCharge = await db.Charge.create(
+          const createdCharge = await db.Charge.create(
             {
               type: tripCharge.type,
               amount: tripCharge.amount,
@@ -582,7 +751,7 @@ const finishTrip = async (req, res) => {
           return await db.TripCharges.create(
             {
               trip: parsedTripId,
-              charge: createCharge.id,
+              charge: createdCharge.id,
               type: tripCharge.type,
               amount: tripCharge.amount,
             },
@@ -595,16 +764,42 @@ const finishTrip = async (req, res) => {
     console.log("Calculating financials...");
     let waitedAmount = 0;
     tripProductsWithInfo.forEach((tripProduct) => {
-      const productPrice = tripProduct.product.priceUnite;
-      const qttVendu = tripProduct.qttVendu;
+      const productPrice = tripProduct.product?.priceUnite || 0;
+      const qttVendu = tripProduct.qttVendu || 0;
       waitedAmount += productPrice * qttVendu;
     });
 
-    console.log("Updating trip financials:", { waitedAmount, receivedAmount });
+    const totalCharges = tripChargesData.reduce(
+      (total, charge) => total + (charge.amount || 0),
+      0
+    );
+    waitedAmount = waitedAmount - totalCharges - totalWasteCost;
+
+    const adjustedReceivedAmount = parseFloat(receivedAmount) || 0;
+
+    if (adjustedReceivedAmount < 0) {
+      throw new CustomError.BadRequestError(
+        "Le montant reçu après déduction des charges et des coûts de déchets ne peut pas être négatif."
+      );
+    }
+
+    if (waitedAmount < 0) {
+      throw new CustomError.BadRequestError(
+        "Le montant attendu après déduction des charges et des coûts de déchets ne peut pas être négatif."
+      );
+    }
+
+    console.log("Updating trip financials:", {
+      waitedAmount,
+      receivedAmount: adjustedReceivedAmount,
+      totalCharges,
+      totalWasteCost,
+    });
+
     trip.waitedAmount = waitedAmount;
-    trip.receivedAmount = receivedAmount;
-    trip.benefit = waitedAmount - receivedAmount;
-    trip.deff = receivedAmount - waitedAmount;
+    trip.receivedAmount = adjustedReceivedAmount;
+    trip.benefit = adjustedReceivedAmount - totalCharges;
+    trip.deff = adjustedReceivedAmount - waitedAmount;
     trip.isActive = false;
     await trip.save({ transaction });
 
@@ -622,7 +817,6 @@ const finishTrip = async (req, res) => {
       message: error.message,
       stack: error.stack,
       status: error.statusCode,
-      details: error.details,
       requestBody: req.body,
     });
     const status = error.statusCode || StatusCodes.INTERNAL_SERVER_ERROR;
@@ -636,7 +830,6 @@ const emptyTruck = async (req, res) => {
     const { matricule } = req.params;
     console.log(`Emptying truck with matricule: ${matricule}`);
 
-    // Find the last completed trip for the truck
     const lastTrip = await db.Trip.findOne({
       where: { truck_matricule: matricule, isActive: false },
       order: [["date", "DESC"]],
@@ -649,7 +842,6 @@ const emptyTruck = async (req, res) => {
       );
     }
 
-    // Fetch TripProducts and TripBoxes for the last trip
     const tripProducts = await db.TripProduct.findAll({
       where: { trip: lastTrip.id },
       include: [
@@ -676,7 +868,6 @@ const emptyTruck = async (req, res) => {
       transaction,
     });
 
-    // Update product stock
     await Promise.all(
       tripProducts.map(async (tripProduct) => {
         const product = await db.Product.findOne({
@@ -684,10 +875,13 @@ const emptyTruck = async (req, res) => {
           transaction,
         });
         if (product) {
-          console.log(`Updating Product stock for product ${tripProduct.product}:`, {
-            stockIncrease: tripProduct.qttReutour,
-            uniteInStockIncrease: tripProduct.qttReutourUnite,
-          });
+          console.log(
+            `Updating Product stock for product ${tripProduct.product}:`,
+            {
+              stockIncrease: tripProduct.qttReutour,
+              uniteInStockIncrease: tripProduct.qttReutourUnite,
+            }
+          );
           product.stock += tripProduct.qttReutour || 0;
           product.uniteInStock += tripProduct.qttReutourUnite || 0;
           await product.save({ transaction });
@@ -695,7 +889,6 @@ const emptyTruck = async (req, res) => {
       })
     );
 
-    // Update box stock (already handled in finishTrip, but ensure consistency)
     await Promise.all(
       tripBoxes.map(async (tripBox) => {
         const box = await db.Box.findOne({
@@ -714,7 +907,6 @@ const emptyTruck = async (req, res) => {
       })
     );
 
-    // Clear the returned quantities from the last trip
     await db.TripProduct.update(
       { qttReutour: 0, qttReutourUnite: 0 },
       { where: { trip: lastTrip.id }, transaction }
@@ -794,9 +986,9 @@ const getTrips = async (req, res) => {
       employee,
       truck,
       status,
-      sortBy = 'date',
-      sortOrder = 'DESC',
-      search
+      sortBy = "date",
+      sortOrder = "DESC",
+      search,
     } = req.query;
 
     const parsedPage = parseInt(page, 10);
@@ -809,86 +1001,74 @@ const getTrips = async (req, res) => {
     }
 
     const where = {};
-    
-    // Date range filter
+
     if (startDate || endDate) {
       where.date = {};
       if (startDate) where.date[Op.gte] = new Date(startDate);
       if (endDate) where.date[Op.lte] = new Date(endDate);
     }
 
-    // Status filter
-    if (status === 'active') where.isActive = true;
-    else if (status === 'completed') where.isActive = false;
+    if (status === "active") where.isActive = true;
+    else if (status === "completed") where.isActive = false;
 
-    // Employee filter (search by CIN or name in Driver/Seller/Assistant)
-    let employeeWhere = {};
-    if (employee) {
-      employeeWhere = {
-        [Op.or]: [
-          { cin: { [Op.like]: `%${employee}%` } },
-          { name: { [Op.like]: `%${employee}%` } }
-        ]
-      };
-    }
-
-    // Truck filter
     if (truck) {
       where.truck_matricule = { [Op.like]: `%${truck}%` };
     }
 
-    // General search (zone or ID)
     if (search) {
       where[Op.or] = [
         { zone: { [Op.like]: `%${search}%` } },
-        { id: { [Op.eq]: parseInt(search, 10) || 0 } }
+        { id: { [Op.eq]: parseInt(search, 10) || 0 } },
       ];
     }
 
-    // Sorting
-    const validSortFields = ['date', 'zone', 'waitedAmount', 'receivedAmount'];
-    const sortField = validSortFields.includes(sortBy) ? sortBy : 'date';
-    const sortDirection = sortOrder.toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
+    const include = [
+      {
+        model: db.Truck,
+        as: "TruckAssociation",
+        attributes: ["matricule"],
+        required: truck ? true : false,
+      },
+      {
+        model: db.Employee,
+        as: "DriverAssociation",
+        attributes: ["name"],
+        required: false,
+      },
+      {
+        model: db.Employee,
+        as: "SellerAssociation",
+        attributes: ["name"],
+        where: employee ? { cin: { [Op.like]: `%${employee}%` } } : null,
+        required: !!employee, // Only require SellerAssociation if employee filter is provided
+      },
+      {
+        model: db.Employee,
+        as: "AssistantAssociation",
+        attributes: ["name"],
+        required: false,
+      },
+    ];
+
+    const validSortFields = ["date", "zone", "waitedAmount", "receivedAmount"];
+    const sortField = validSortFields.includes(sortBy) ? sortBy : "date";
+    const sortDirection = sortOrder.toUpperCase() === "ASC" ? "ASC" : "DESC";
 
     const offset = (parsedPage - 1) * parsedLimit;
     const { count, rows } = await db.Trip.findAndCountAll({
       where,
-      include: [
-        {
-          model: db.Truck,
-          as: "TruckAssociation",
-          attributes: ["matricule"]
-        },
-        {
-          model: db.Employee,
-          as: "DriverAssociation",
-          attributes: ["name"],
-          where: employeeWhere.cin ? employeeWhere : undefined
-        },
-        {
-          model: db.Employee,
-          as: "SellerAssociation",
-          attributes: ["name"],
-          where: employeeWhere.cin ? employeeWhere : undefined
-        },
-        {
-          model: db.Employee,
-          as: "AssistantAssociation",
-          attributes: ["name"],
-          where: employeeWhere.cin ? employeeWhere : undefined
-        }
-      ],
+      include,
       order: [[sortField, sortDirection]],
       limit: parsedLimit,
       offset,
-      distinct: true
+      distinct: true,
     });
 
     res.status(StatusCodes.OK).json({
       trips: rows,
       totalItems: count,
       totalPages: Math.ceil(count / parsedLimit),
-      currentPage: parsedPage
+      currentPage: parsedPage,
     });
   } catch (error) {
     console.error("getTrips error:", error.message, error.stack);
@@ -1024,7 +1204,10 @@ const generateInvoice = async (req, res) => {
         qttIn: tb.qttIn,
       }));
       invoice.wastes = tripWastes.map((tw) => ({
-        product: tw.WasteAssociation?.ProductAssociation?.designation || tw.product || "Inconnu",
+        product:
+          tw.WasteAssociation?.ProductAssociation?.designation ||
+          tw.product ||
+          "Inconnu",
         type: tw.type,
         qtt: tw.qtt,
       }));
@@ -1055,7 +1238,10 @@ const getAllProducts = async (req, res) => {
     const products = await db.Product.findAll({
       attributes: ["id", "designation", "priceUnite", "capacityByBox"],
     });
-    console.log("getAllProducts result:", products.map(p => p.toJSON()));
+    console.log(
+      "getAllProducts result:",
+      products.map((p) => p.toJSON())
+    );
 
     if (!products || products.length === 0) {
       console.log("No products found in database");
@@ -1077,7 +1263,10 @@ const getAllEmployees = async (req, res) => {
     const employees = await db.Employee.findAll({
       attributes: ["cin", "name", "role"],
     });
-    console.log("getAllEmployees result:", employees.map(e => e.toJSON()));
+    console.log(
+      "getAllEmployees result:",
+      employees.map((e) => e.toJSON())
+    );
 
     if (!employees || employees.length === 0) {
       console.log("No employees found in database");
@@ -1110,7 +1299,6 @@ const transferProducts = async (req, res) => {
       tripBoxes,
     });
 
-    // Validate inputs
     if (!sourceTripId || !destinationTripId) {
       throw new CustomError.BadRequestError(
         "Source et destination de la tournée sont requis."
@@ -1125,14 +1313,19 @@ const transferProducts = async (req, res) => {
       );
     }
 
-    // Fetch source trip
     const sourceTrip = await db.Trip.findOne({
       where: { id: parsedSourceTripId },
       include: [
         {
           model: db.TripProduct,
           as: "TripProducts",
-          attributes: ["product", "qttOut", "qttOutUnite", "qttReutour", "qttReutourUnite"],
+          attributes: [
+            "product",
+            "qttOut",
+            "qttOutUnite",
+            "qttReutour",
+            "qttReutourUnite",
+          ],
         },
         {
           model: db.TripBox,
@@ -1149,7 +1342,6 @@ const transferProducts = async (req, res) => {
       );
     }
 
-    // Fetch destination trip
     const destinationTrip = await db.Trip.findOne({
       where: { id: parsedDestinationTripId, isActive: true },
       transaction,
@@ -1161,11 +1353,14 @@ const transferProducts = async (req, res) => {
       );
     }
 
-    // Process TripProducts
     if (tripProducts.length > 0) {
       await Promise.all(
         tripProducts.map(async (transferProduct) => {
-          const { product_id, additionalQttOut = 0, additionalQttOutUnite = 0 } = transferProduct;
+          const {
+            product_id,
+            additionalQttOut = 0,
+            additionalQttOutUnite = 0,
+          } = transferProduct;
           const sourceProduct = sourceTrip.TripProducts.find(
             (tp) => Number(tp.product) === Number(product_id)
           );
@@ -1175,20 +1370,17 @@ const transferProducts = async (req, res) => {
               `Produit ID ${product_id} non trouvé dans la tournée source.`
             );
           }
-
-          // Calculate remaining quantities
           const remainingQtt =
             (sourceProduct.qttOut || 0) - (sourceProduct.qttReutour || 0);
           const remainingQttUnite =
-            (sourceProduct.qttOutUnite || 0) - (sourceProduct.qttReutourUnite || 0);
+            (sourceProduct.qttOutUnite || 0) -
+            (sourceProduct.qttReutourUnite || 0);
 
           if (remainingQtt <= 0 && remainingQttUnite <= 0) {
             throw new CustomError.BadRequestError(
               `Aucune quantité restante pour le produit ID ${product_id} dans la tournée source.`
             );
           }
-
-          // Validate product exists
           const product = await db.Product.findOne({
             where: { id: product_id },
             transaction,
@@ -1199,14 +1391,12 @@ const transferProducts = async (req, res) => {
             );
           }
 
-          // Check if product already exists in destination trip
-          let destinationProduct = await db.TripProduct.findOne({
+          const destinationProduct = await db.TripProduct.findOne({
             where: { trip: parsedDestinationTripId, product: product_id },
             transaction,
           });
 
           if (destinationProduct) {
-            // Update existing record
             destinationProduct.qttOut =
               (destinationProduct.qttOut || 0) +
               remainingQtt +
@@ -1216,28 +1406,31 @@ const transferProducts = async (req, res) => {
               remainingQttUnite +
               (parseInt(additionalQttOutUnite, 10) || 0);
             await destinationProduct.save({ transaction });
-            console.log(`Updated TripProduct ${product_id} in destination trip.`);
+            console.log(
+              `Updated TripProduct ${product_id} in destination trip.`
+            );
           } else {
-            // Create new record
             await db.TripProduct.create(
               {
                 trip: parsedDestinationTripId,
                 product: product_id,
                 qttOut: remainingQtt + (parseInt(additionalQttOut, 10) || 0),
                 qttOutUnite:
-                  remainingQttUnite + (parseInt(additionalQttOutUnite, 10) || 0),
+                  remainingQttUnite +
+                  (parseInt(additionalQttOutUnite, 10) || 0),
                 qttReutour: 0,
                 qttReutourUnite: 0,
               },
               { transaction }
             );
-            console.log(`Created TripProduct ${product_id} in destination trip.`);
+            console.log(
+              `Created TripProduct ${product_id} in destination trip.`
+            );
           }
         })
       );
     }
 
-    // Process TripBoxes
     if (tripBoxes.length > 0) {
       await Promise.all(
         tripBoxes.map(async (transferBox) => {
@@ -1252,7 +1445,6 @@ const transferProducts = async (req, res) => {
             );
           }
 
-          // Calculate remaining quantity
           const remainingQtt = (sourceBox.qttOut || 0) - (sourceBox.qttIn || 0);
 
           if (remainingQtt <= 0) {
@@ -1260,8 +1452,6 @@ const transferProducts = async (req, res) => {
               `Aucune quantité restante pour la boîte ID ${box_id} dans la tournée source.`
             );
           }
-
-          // Validate box exists
           const box = await db.Box.findOne({
             where: { id: box_id },
             transaction,
@@ -1272,14 +1462,12 @@ const transferProducts = async (req, res) => {
             );
           }
 
-          // Check if box already exists in destination trip
           let destinationBox = await db.TripBox.findOne({
             where: { trip: parsedDestinationTripId, box: box_id },
             transaction,
           });
 
           if (destinationBox) {
-            // Update existing record
             destinationBox.qttOut =
               (destinationBox.qttOut || 0) +
               remainingQtt +
@@ -1287,7 +1475,6 @@ const transferProducts = async (req, res) => {
             await destinationBox.save({ transaction });
             console.log(`Updated TripBox ${box_id} in destination trip.`);
           } else {
-            // Create new record
             await db.TripBox.create(
               {
                 trip: parsedDestinationTripId,
@@ -1316,9 +1503,62 @@ const transferProducts = async (req, res) => {
       requestBody: req.body,
     });
     const status = error.statusCode || StatusCodes.INTERNAL_SERVER_ERROR;
-    res.status(status).json({ errorMessage: error.message });
+    res.status(status).json({ error: error.message });
   }
 };
+
+const getTotalTripRevenue = async (req, res) => {
+  try {
+    const { Trip, Employee } = db;
+    if (!Trip || !Employee) {
+      throw new Error("Trip or Employee model not defined");
+    }
+
+    const { startDate, endDate, search } = req.query;
+
+    const where = {};
+    if (startDate || endDate) {
+      where.date = {};
+      if (startDate) where.date[Op.gte] = startDate;
+      if (endDate) where.date[Op.lte] = endDate;
+    }
+    if (search) {
+      where[Op.or] = [
+        { zone: { [Op.iLike]: `%${search}%` } },
+        { '$Employee.name$': { [Op.iLike]: `%${search}%` } },
+      ];
+    }
+
+    const result = await Trip.findOne({
+      attributes: [
+        [db.sequelize.fn('SUM', db.sequelize.col('receivedAmount')), 'totalRevenue']
+      ],
+      where,
+      include: [
+        {
+          model: Employee,
+          attributes: [],
+        },
+      ],
+      raw: true,
+    });
+
+    const totalRevenue = parseFloat(result.totalRevenue) || 0;
+
+    res.status(200).json({
+      success: true,
+      totalRevenue,
+    });
+  } catch (error) {
+    console.error("Error in getTotalTripRevenue:", error);
+    res.status(500).json({
+      success: false,
+      message: error.message || "Erreur lors du calcul du revenu total des tournées",
+    });
+  }
+};
+
+
 
 module.exports = {
   startTrip,
@@ -1331,4 +1571,7 @@ module.exports = {
   getAllProducts,
   getAllEmployees,
   emptyTruck,
+    getTotalTripRevenue,
+
+  transferProducts,
 };

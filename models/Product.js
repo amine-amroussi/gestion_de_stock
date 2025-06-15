@@ -33,6 +33,10 @@ module.exports = (sequelize, DataTypes) => {
       foreignKey: "product",
       sourceKey: "id",
     });
+    Product.hasMany(models.PurchaseWaste, {
+        foreignKey: 'product',
+        as: 'PurchaseWastes',
+      });
     Product.belongsTo(models.Box, {
       foreignKey: "box",
       targetKey: "id",
