@@ -217,10 +217,21 @@ const startTrip = async (req, res) => {
       tripBoxes,
     });
 
-    // Validate required fields
-    if (!truck_matricule || !driver_id || !seller_id || !date || !zone) {
+    // Validate truck_matricule
+    if (!truck_matricule || typeof truck_matricule !== "string") {
       throw new CustomError.BadRequestError(
-        "Tous les champs requis doivent être remplis."
+        "Matricule du camion manquant ou invalide."
+      );
+    }
+
+    // Validate truck
+    const truck = await db.Truck.findOne({
+      where: { matricule: truck_matricule },
+      transaction,
+    });
+    if (!truck) {
+      throw new CustomError.NotFoundError(
+        `Camion avec matricule ${truck_matricule} non trouvé.`
       );
     }
 
@@ -235,17 +246,6 @@ const startTrip = async (req, res) => {
 
     if (ifTheTruckIsGo) {
       throw new CustomError.BadRequestError("Ce camion est déjà sorti");
-    }
-
-    // Validate truck
-    const truck = await db.Truck.findOne({
-      where: { matricule: truck_matricule },
-      transaction,
-    });
-    if (!truck) {
-      throw new CustomError.NotFoundError(
-        `Camion avec matricule ${truck_matricule} non trouvé.`
-      );
     }
 
     // Validate driver
@@ -279,16 +279,25 @@ const startTrip = async (req, res) => {
       : null;
 
     // Validate tripProducts
-    if (!tripProducts || !Array.isArray(tripProducts) || tripProducts.length === 0) {
+    const hasProducts = tripProducts && Array.isArray(tripProducts) && tripProducts.length > 0;
+    if (!hasProducts) {
       throw new CustomError.BadRequestError(
         "Au moins un produit est requis pour démarrer une tournée."
       );
     }
 
+    // Find the last trip for the truck to update remaining quantities
+    const lastTrip = await db.Trip.findOne({
+      where: { truck_matricule: truck_matricule, isActive: false },
+      order: [["date", "DESC"]],
+      transaction,
+    });
+
+    // Validate and check stock for products
     for (const p of tripProducts) {
-      if (!p.product_id || p.qttOut < 0 || p.qttOutUnite < 0) {
+      if (!p.product_id || (p.qttOut === 0 && p.qttOutUnite === 0)) {
         throw new CustomError.BadRequestError(
-          `Produit ID ${p.product_id} invalide ou quantités négatives.`
+          `Produit ID ${p.product_id} invalide ou quantités non fournies.`
         );
       }
       const product = await db.Product.findOne({
@@ -300,7 +309,41 @@ const startTrip = async (req, res) => {
           `Produit avec ID ${p.product_id} non trouvé.`
         );
       }
-      if (p.qttOut > product.stock || p.qttOutUnite > product.uniteInStock) {
+      if (p.qttOut < 0 || p.qttOutUnite < 0) {
+        throw new CustomError.BadRequestError(
+          `Produit ID ${p.product_id} a des quantités négatives.`
+        );
+      }
+
+      let qttOutFromStock = p.qttOut || 0;
+      let qttOutUniteFromStock = p.qttOutUnite || 0;
+
+      if (p.fromLastTrip && lastTrip) {
+        const lastTripProduct = await db.TripProduct.findOne({
+          where: { trip: lastTrip.id, product: p.product_id },
+          transaction,
+        });
+        if (lastTripProduct) {
+          const availableQttReutour = lastTripProduct.qttReutour || 0;
+          const availableQttReutourUnite = lastTripProduct.qttReutourUnite || 0;
+          // Calculate stock deduction by excluding remaining quantities
+          qttOutFromStock = Math.max(0, p.qttOut - availableQttReutour);
+          qttOutUniteFromStock = Math.max(0, p.qttOutUnite - availableQttReutourUnite);
+          console.log(`Product ${p.product_id} from last trip:`, {
+            requestedQttOut: p.qttOut,
+            requestedQttOutUnite: p.qttOutUnite,
+            availableQttReutour,
+            availableQttReutourUnite,
+            qttOutFromStock,
+            qttOutUniteFromStock,
+          });
+        } else {
+          console.log(`No remaining product ID ${p.product_id} in last trip, all quantities from stock.`);
+        }
+      }
+
+      // Validate stock for quantities not covered by last trip
+      if (qttOutFromStock > product.stock || qttOutUniteFromStock > product.uniteInStock) {
         throw new CustomError.BadRequestError(
           `Stock insuffisant pour le produit ID ${p.product_id}. Stock: ${product.stock} caisses, ${product.uniteInStock} unités.`
         );
@@ -315,9 +358,9 @@ const startTrip = async (req, res) => {
     }
 
     for (const b of tripBoxes) {
-      if (!b.box_id || b.qttOut < 0) {
+      if (!b.box_id || b.qttOut <= 0) {
         throw new CustomError.BadRequestError(
-          `Boîte ID ${b.box_id} invalide ou quantité négative.`
+          `Boîte ID ${b.box_id} invalide ou quantité non fournie.`
         );
       }
       const box = await db.Box.findOne({
@@ -329,7 +372,20 @@ const startTrip = async (req, res) => {
           `Boîte avec ID ${b.box_id} non trouvée.`
         );
       }
-      if (b.qttOut > box.inStock) {
+      let qttOutFromStock = b.qttOut;
+
+      if (b.fromLastTrip && lastTrip) {
+        const lastTripBox = await db.TripBox.findOne({
+          where: { trip: lastTrip.id, box: b.box_id },
+          transaction,
+        });
+        if (lastTripBox) {
+          const availableQttIn = lastTripBox.qttIn || 0;
+          qttOutFromStock = Math.max(0, b.qttOut - availableQttIn);
+        }
+      }
+
+      if (qttOutFromStock > box.inStock) {
         throw new CustomError.BadRequestError(
           `Stock insuffisant pour la boîte ID ${b.box_id}. Stock: ${box.inStock}.`
         );
@@ -351,54 +407,74 @@ const startTrip = async (req, res) => {
     );
     console.log("Trip created with ID:", trip.id, "isActive:", trip.isActive);
 
-    // Create TripProducts
-    const productRecords = tripProducts.map((p) => ({
-      trip: trip.id,
-      product: p.product_id,
-      qttOut: p.qttOut,
-      qttOutUnite: p.qttOutUnite || 0,
-    }));
-    const tripProductsCreated = await db.TripProduct.bulkCreate(productRecords, {
-      transaction,
-    });
-    console.log("TripProducts created:", tripProductsCreated.map(tp => tp.toJSON()));
-
-    // Create TripBoxes
-    const boxRecords = tripBoxes.map((b) => ({
-      trip: trip.id,
-      box: b.box_id,
-      qttOut: b.qttOut,
-    }));
-    const tripBoxesCreated = await db.TripBox.bulkCreate(boxRecords, { transaction });
-    console.log("TripBoxes created:", tripBoxesCreated.map(tb => tb.toJSON()));
-
-    // Update product quantities
-    console.log("Updating product quantities...");
-    if (!tripProductsCreated || tripProductsCreated.length === 0) {
-      throw new CustomError.BadRequestError("Aucun produit créé pour la mise à jour du stock.");
-    }
+    // Create and update TripProducts
     await Promise.all(
-      tripProductsCreated.map(async (tripProduct) => {
+      tripProducts.map(async (p) => {
         const product = await db.Product.findOne({
-          where: { id: tripProduct.product },
+          where: { id: p.product_id },
           transaction,
         });
-        if (product) {
-          console.log(`Updating product ${tripProduct.product}:`, {
+        if (!product) {
+          throw new CustomError.NotFoundError(
+            `Produit avec ID ${p.product_id} non trouvé.`
+          );
+        }
+
+        let qttOutFromStock = p.qttOut || 0;
+        let qttOutUniteFromStock = p.qttOutUnite || 0;
+
+        if (p.fromLastTrip && lastTrip) {
+          const lastTripProduct = await db.TripProduct.findOne({
+            where: { trip: lastTrip.id, product: p.product_id },
+            transaction,
+          });
+          if (lastTripProduct) {
+            const availableQttReutour = lastTripProduct.qttReutour || 0;
+            const availableQttReutourUnite = lastTripProduct.qttReutourUnite || 0;
+            qttOutFromStock = Math.max(0, p.qttOut - availableQttReutour);
+            qttOutUniteFromStock = Math.max(0, p.qttOutUnite - availableQttReutourUnite);
+            // Update last trip's remaining quantities
+            lastTripProduct.qttReutour = Math.max(0, availableQttReutour - p.qttOut);
+            lastTripProduct.qttReutourUnite = Math.max(0, availableQttReutourUnite - p.qttOutUnite);
+            await lastTripProduct.save({ transaction });
+            console.log(`Updated last trip product ${p.product_id}:`, {
+              qttReutour: lastTripProduct.qttReutour,
+              qttReutourUnite: lastTripProduct.qttReutourUnite,
+            });
+          }
+        }
+
+        // Create TripProduct record with merged quantities
+        await db.TripProduct.create(
+          {
+            trip: trip.id,
+            product: p.product_id,
+            qttOut: p.qttOut,
+            qttOutUnite: p.qttOutUnite || 0,
+            qttReutour: 0,
+            qttReutourUnite: 0,
+            qttVendu: 0,
+          },
+          { transaction }
+        );
+
+        // Deduct only new quantities from stock
+        if (qttOutFromStock > 0 || qttOutUniteFromStock > 0) {
+          console.log(`Updating product ${p.product_id} from stock:`, {
             stockBefore: product.stock,
             uniteInStockBefore: product.uniteInStock,
-            qttOut: tripProduct.qttOut,
-            qttOutUnite: tripProduct.qttOutUnite,
+            qttOutFromStock,
+            qttOutUniteFromStock,
           });
-          product.stock -= tripProduct.qttOut;
-          product.uniteInStock -= tripProduct.qttOutUnite;
+          product.stock -= qttOutFromStock;
+          product.uniteInStock -= qttOutUniteFromStock;
           if (product.stock < 0 || product.uniteInStock < 0) {
             throw new CustomError.BadRequestError(
-              `Stock négatif non autorisé pour le produit ID ${tripProduct.product}.`
+              `Stock négatif non autorisé pour le produit ID ${p.product_id}.`
             );
           }
           await product.save({ transaction });
-          console.log(`Updated product ${tripProduct.product}:`, {
+          console.log(`Updated product ${p.product_id}:`, {
             stockAfter: product.stock,
             uniteInStockAfter: product.uniteInStock,
           });
@@ -406,32 +482,65 @@ const startTrip = async (req, res) => {
       })
     );
 
-    // Update box quantities
-    console.log("Updating box quantities...");
-    if (!tripBoxesCreated || tripBoxesCreated.length === 0) {
-      throw new CustomError.BadRequestError("Aucune boîte créée pour la mise à jour du stock.");
-    }
+    // Create and update TripBoxes
     await Promise.all(
-      tripBoxesCreated.map(async (tripBox) => {
+      tripBoxes.map(async (b) => {
         const box = await db.Box.findOne({
-          where: { id: tripBox.box },
+          where: { id: b.box_id },
           transaction,
         });
-        if (box) {
-          console.log(`Updating box ${tripBox.box}:`, {
+        if (!box) {
+          throw new CustomError.NotFoundError(
+            `Boîte avec ID ${b.box_id} non trouvée.`
+          );
+        }
+
+        let qttOutFromStock = b.qttOut;
+
+        if (b.fromLastTrip && lastTrip) {
+          const lastTripBox = await db.TripBox.findOne({
+            where: { trip: lastTrip.id, box: b.box_id },
+            transaction,
+          });
+          if (lastTripBox) {
+            const availableQttIn = lastTripBox.qttIn || 0;
+            qttOutFromStock = Math.max(0, b.qttOut - availableQttIn);
+            // Update last trip's remaining box quantities
+            lastTripBox.qttIn = Math.max(0, availableQttIn - b.qttOut);
+            await lastTripBox.save({ transaction });
+            console.log(`Updated last trip box ${b.box_id}:`, {
+              qttIn: lastTripBox.qttIn,
+            });
+          }
+        }
+
+        // Create TripBox record
+        await db.TripBox.create(
+          {
+            trip: trip.id,
+            box: b.box_id,
+            qttOut: b.qttOut,
+            qttIn: 0,
+          },
+          { transaction }
+        );
+
+        // Deduct only new quantities from stock
+        if (qttOutFromStock > 0) {
+          console.log(`Updating box ${b.box_id}:`, {
             inStockBefore: box.inStock,
             sentBefore: box.sent,
-            qttOut: tripBox.qttOut,
+            qttOutFromStock,
           });
-          box.inStock -= tripBox.qttOut;
-          box.sent += tripBox.qttOut;
+          box.inStock -= qttOutFromStock;
+          box.sent += qttOutFromStock;
           if (box.inStock < 0) {
             throw new CustomError.BadRequestError(
-              `Stock négatif non autorisé pour la boîte ID ${tripBox.box}.`
+              `Stock négatif non autorisé pour la boîte ID ${b.box_id}.`
             );
           }
           await box.save({ transaction });
-          console.log(`Updated box ${tripBox.box}:`, {
+          console.log(`Updated box ${b.box_id}:`, {
             inStockAfter: box.inStock,
             sentAfter: box.sent,
           });
@@ -450,6 +559,28 @@ const startTrip = async (req, res) => {
           model: db.Employee,
           as: "AssistantAssociation",
           attributes: ["name"],
+        },
+        {
+          model: db.TripProduct,
+          as: "TripProducts",
+          include: [
+            {
+              model: db.Product,
+              as: "ProductAssociation",
+              attributes: ["designation", "priceUnite", "capacityByBox"],
+            },
+          ],
+        },
+        {
+          model: db.TripBox,
+          as: "TripBoxes",
+          include: [
+            {
+              model: db.Box,
+              as: "BoxAssociation",
+              attributes: ["designation"],
+            },
+          ],
         },
       ],
       transaction,
@@ -741,10 +872,12 @@ const finishTrip = async (req, res) => {
       console.log("Processing TripCharges...");
       tripChargesData = await Promise.all(
         tripCharges.map(async (tripCharge) => {
+          const today = new Date().getDate()
           const createdCharge = await db.Charge.create(
             {
               type: tripCharge.type,
               amount: tripCharge.amount,
+              date: trip.date
             },
             { transaction }
           );
@@ -936,15 +1069,22 @@ const emptyTruck = async (req, res) => {
 const getRestInLastTruck = async (req, res) => {
   try {
     const { id: truck_matricule } = req.params;
+    console.log(`getRestInLastTruck: Fetching last trip for truck_matricule: ${truck_matricule}`);
+
     const trip = await db.Trip.findOne({
       where: { truck_matricule, isActive: false },
       order: [["date", "DESC"]],
     });
+
     if (!trip) {
+      console.log(`getRestInLastTruck: No completed trip found for truck_matricule: ${truck_matricule}`);
       throw new CustomError.NotFoundError(
         `Tournée avec matricule de camion ${truck_matricule} non trouvée`
       );
     }
+
+    console.log(`getRestInLastTruck: Found trip ID: ${trip.id}`);
+
     const tripProducts = await db.TripProduct.findAll({
       where: { trip: trip.id },
       include: [
@@ -956,22 +1096,34 @@ const getRestInLastTruck = async (req, res) => {
       ],
       attributes: ["product", "qttReutour", "qttReutourUnite"],
     });
+
     const tripBoxes = await db.TripBox.findAll({
       where: { trip: trip.id },
       include: [
         { model: db.Box, as: "BoxAssociation", attributes: ["designation"] },
       ],
-      attributes: ["box", "qttIn"],
+      attributes: ["box", "qttOut", "qttIn"],
     });
+
+    console.log("getRestInLastTruck: Response data:", {
+      trip: trip.toJSON(),
+      tripProducts: tripProducts.map((tp) => tp.toJSON()),
+      tripBoxes: tripBoxes.map((tb) => tb.toJSON()),
+    });
+
     res.status(StatusCodes.OK).json({
       trip,
       tripProducts,
       tripBoxes,
     });
   } catch (error) {
-    console.error("getRestInLastTruck error:", error.message, error.stack);
-    res.status(StatusCodes.INTERNAL_SERVER_ERROR).json({
-      message: "Erreur lors de la récupération des données du dernier camion.",
+    console.error("getRestInLastTruck error:", {
+      message: error.message,
+      stack: error.stack,
+      params: req.params,
+    });
+    res.status(error.statusCode || StatusCodes.INTERNAL_SERVER_ERROR).json({
+      message: error.message || "Erreur lors de la récupération des données du dernier camion.",
     });
   }
 };
@@ -1040,7 +1192,7 @@ const getTrips = async (req, res) => {
         as: "SellerAssociation",
         attributes: ["name"],
         where: employee ? { cin: { [Op.like]: `%${employee}%` } } : null,
-        required: !!employee, // Only require SellerAssociation if employee filter is provided
+        required: !!employee,
       },
       {
         model: db.Employee,
@@ -1373,8 +1525,7 @@ const transferProducts = async (req, res) => {
           const remainingQtt =
             (sourceProduct.qttOut || 0) - (sourceProduct.qttReutour || 0);
           const remainingQttUnite =
-            (sourceProduct.qttOutUnite || 0) -
-            (sourceProduct.qttReutourUnite || 0);
+            (sourceProduct.qttOutUnite || 0) - (sourceProduct.qttReutourUnite || 0);
 
           if (remainingQtt <= 0 && remainingQttUnite <= 0) {
             throw new CustomError.BadRequestError(
@@ -1558,8 +1709,6 @@ const getTotalTripRevenue = async (req, res) => {
   }
 };
 
-
-
 module.exports = {
   startTrip,
   finishTrip,
@@ -1571,7 +1720,6 @@ module.exports = {
   getAllProducts,
   getAllEmployees,
   emptyTruck,
-    getTotalTripRevenue,
-
+  getTotalTripRevenue,
   transferProducts,
 };

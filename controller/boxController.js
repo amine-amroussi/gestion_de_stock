@@ -3,11 +3,11 @@ const CustomError = require("../errors");
 const db = require("../models");
 
 const createBox = async (req, res) => {
-  const { designation } = req.body;
+  const { designation , type} = req.body;
   if (!designation) {
     throw new CustomError.BadRequestError("Designation requise.");
   }
-  const box = await db.Box.create({ designation });
+  const box = await db.Box.create({ designation , type });
   res.status(StatusCodes.CREATED).json({ status: "success", data: { box } });
 };
 

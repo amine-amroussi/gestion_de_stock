@@ -1,4 +1,4 @@
-const { Trip, Purchase, PaymentEmployee } = require('../models');
+const { Trip, Purchase, PaymentEmployee, Charge } = require('../models');
 const { Op } = require('sequelize');
 const moment = require('moment');
 
@@ -40,7 +40,7 @@ const getFinancialSummary = async (req, res) => {
         return res.status(400).json({ msg: 'Invalid period specified.' });
     }
 
-    // Date filter for trips and purchases
+    // Date filter for trips, purchases, and charges
     dateFilter = {
       date: {
         [Op.gte]: startMoment.toDate(),
@@ -101,14 +101,31 @@ const getFinancialSummary = async (req, res) => {
       return acc;
     }, {});
 
+    // Fetch charges
+    const charges = await Charge.findAll({
+      where: dateFilter,
+      attributes: ['id', 'date', 'amount'],
+    });
+    const totalCharges = charges.reduce((sum, charge) => sum + (parseFloat(charge.amount) || 0), 0);
+    const chargesByDate = charges.reduce((acc, charge) => {
+      const date = moment(charge.date).format('YYYY-MM-DD');
+      acc[date] = (acc[date] || 0) + (parseFloat(charge.amount) || 0);
+      return acc;
+    }, {});
+
+    // Calculate net revenue
+    const netRevenue = totalRevenue - totalCharges;
+
     res.status(200).json({
       data: {
-        totalRevenue: totalRevenue.toFixed(2),
+        totalRevenue: netRevenue.toFixed(2),
         revenueByDate,
         totalPurchases: totalPurchases.toFixed(2),
         purchasesByDate,
         totalPayments: totalPayments.toFixed(2),
         paymentsByDate,
+        totalCharges: totalCharges.toFixed(2),
+        chargesByDate,
         period,
         startDate: startMoment.toDate(),
         endDate: endMoment.toDate(),
