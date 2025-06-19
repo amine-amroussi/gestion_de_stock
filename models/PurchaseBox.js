@@ -1,10 +1,16 @@
 module.exports = (sequelize, DataTypes) => {
   const PurchaseBox = sequelize.define('PurchaseBox', {
-    purchase_id: { type: DataTypes.INTEGER, primaryKey: true },
-    // product_id: { type: DataTypes.INTEGER, primaryKey: true },
-    qttIn: { type: DataTypes.SMALLINT },
-    qttOut: { type: DataTypes.SMALLINT },
-    supplier: { type: DataTypes.INTEGER, allowNull: false }
+    id: {
+      type: DataTypes.INTEGER,
+      primaryKey: true,
+      autoIncrement: true,
+    },
+    purchase_id: { type: DataTypes.INTEGER, allowNull: false },
+    box: { type: DataTypes.INTEGER, allowNull: false },
+    product: { type: DataTypes.INTEGER, allowNull: true },
+    qttIn: { type: DataTypes.SMALLINT, allowNull: false, defaultValue: 0 },
+    qttOut: { type: DataTypes.SMALLINT, allowNull: false, defaultValue: 0 },
+    supplier: { type: DataTypes.INTEGER, allowNull: false },
   }, { tableName: 'PurchaseBox', timestamps: false });
 
   PurchaseBox.associate = (models) => {
@@ -15,4 +21,4 @@ module.exports = (sequelize, DataTypes) => {
   };
 
   return PurchaseBox;
-};
+};  

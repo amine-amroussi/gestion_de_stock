@@ -29,30 +29,78 @@ const createEmployePayment = async (req, res) => {
     throw new CustomError.BadRequestError(`Payment for employee ${employeeId} in ${month}/${year} already exists`);
   }
 
-  const tripsEmployee = await db.Trip.findAll({
-    where: {
-      seller_id: employeeId,
-      date: {
-        [db.Sequelize.Op.between]: [new Date(year, month - 1, 1), new Date(year, month, 0)],
-      },
-    },
-  });
-
+  let total = parseFloat(employee.salary_fix) || 0;
   let credit = 0;
-  for (const trip of tripsEmployee) {
-    const received = parseFloat(trip.receivedAmount) || 0;
-    const waited = parseFloat(trip.waitedAmount) || 0;
-    credit += received - waited;
-  }
+  let net_pay = 0;
 
-  // Calculer net_pay en soustrayant le credit du salaire de base
-  const net_pay = parseFloat(employee.salary_fix) - parseFloat(credit.toFixed(2));
+  // Fetch pending payments for the employee and sum their credits
+  const pendingPayments = await db.PaymentEmployee.findAll({
+    where: { employee_cin: employeeId, status: "Pending" },
+    attributes: ["credit"],
+  });
+  const pendingCreditSum = pendingPayments.reduce((sum, payment) => sum + parseFloat(payment.credit || 0), 0);
+
+  if (employee.role.toLowerCase() === "seller") {
+    // Fetch trips for the seller in the specified month and year
+    const tripsEmployee = await db.Trip.findAll({
+      where: {
+        seller_id: employeeId,
+        date: {
+          [db.Sequelize.Op.between]: [new Date(year, month - 1, 1), new Date(year, month, 0)],
+        },
+      },
+      attributes: ["waitedAmount", "receivedAmount"],
+    });
+
+    // Calculate total waitedAmount and credit for current month
+    let totalWaitedAmount = 0;
+    for (const trip of tripsEmployee) {
+      const received = parseFloat(trip.receivedAmount) || 0;
+      const waited = parseFloat(trip.waitedAmount) || 0;
+      totalWaitedAmount += waited;
+      credit += received - waited;
+    }
+
+    // Add pending credits to current credit
+    credit += pendingCreditSum;
+
+    // Calculate commission (0.008 * totalWaitedAmount)
+    const commission = totalWaitedAmount * 0.008;
+    
+    // Adjust total salary (base salary + commission)
+    total = parseFloat(employee.salary_fix) + commission;
+    
+    // Calculate net_pay (total - credit)
+    net_pay = total - parseFloat(credit.toFixed(2));
+  } else {
+    // Non-seller: use existing credit calculation
+    const tripsEmployee = await db.Trip.findAll({
+      where: {
+        seller_id: employeeId,
+        date: {
+          [db.Sequelize.Op.between]: [new Date(year, month - 1, 1), new Date(year, month, 0)],
+        },
+      },
+    });
+
+    for (const trip of tripsEmployee) {
+      const received = parseFloat(trip.receivedAmount) || 0;
+      const waited = parseFloat(trip.waitedAmount) || 0;
+      credit += received - waited;
+    }
+
+    // Add pending credits to current credit
+    credit += pendingCreditSum;
+
+    // Calculate net_pay (base salary - credit)
+    net_pay = parseFloat(employee.salary_fix) - parseFloat(credit.toFixed(2));
+  }
 
   const paymentEmployeeData = await db.PaymentEmployee.create({
     employee_cin: employeeId,
     month,
     year,
-    total: parseFloat(employee.salary_fix),
+    total: parseFloat(total.toFixed(2)),
     credit: parseFloat(credit.toFixed(2)),
     net_pay: parseFloat(net_pay.toFixed(2)),
     status,
@@ -61,6 +109,7 @@ const createEmployePayment = async (req, res) => {
   res.status(StatusCodes.OK).json({ msg: "Payment created successfully", paymentEmployeeData });
 };
 
+// Other functions remain unchanged
 const getAllPayments = async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;

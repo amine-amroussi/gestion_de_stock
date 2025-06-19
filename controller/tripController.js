@@ -202,8 +202,8 @@ const startTrip = async (req, res) => {
       assistant_id,
       date,
       zone,
-      tripProducts,
-      tripBoxes,
+      tripProducts = [], // Default to empty array if not provided
+      tripBoxes = [], // Default to empty array if not provided
     } = req.body;
 
     console.log("Received startTrip request:", {
@@ -278,63 +278,168 @@ const startTrip = async (req, res) => {
         })
       : null;
 
-    // Validate tripProducts
-    if (!tripProducts || !Array.isArray(tripProducts) || tripProducts.length === 0) {
+    // Validate tripProducts if provided
+    if (tripProducts.length > 0) {
+      for (const p of tripProducts) {
+        if (!p.product_id || p.qttOut < 0 || p.qttOutUnite < 0) {
+          throw new CustomError.BadRequestError(
+            `Produit ID ${p.product_id} invalide ou quantités négatives.`
+          );
+        }
+        const product = await db.Product.findOne({
+          where: { id: p.product_id },
+          transaction,
+        });
+        if (!product) {
+          throw new CustomError.NotFoundError(
+            `Produit avec ID ${p.product_id} non trouvé.`
+          );
+        }
+        if (p.qttOut > product.stock || p.qttOutUnite > product.uniteInStock) {
+          throw new CustomError.BadRequestError(
+            `Stock insuffisant pour le produit ID ${p.product_id}. Stock: ${product.stock} caisses, ${product.uniteInStock} unités.`
+          );
+        }
+      }
+    }
+
+    // Validate tripBoxes if provided
+    if (tripBoxes.length > 0) {
+      for (const b of tripBoxes) {
+        if (!b.box_id || b.qttOut < 0) {
+          throw new CustomError.BadRequestError(
+            `Boîte ID ${b.box_id} invalide ou quantité négative.`
+          );
+        }
+        const box = await db.Box.findOne({
+          where: { id: b.box_id },
+          transaction,
+        });
+        if (!box) {
+          throw new CustomError.NotFoundError(
+            `Boîte avec ID ${b.box_id} non trouvée.`
+          );
+        }
+        if (b.qttOut > box.inStock) {
+          throw new CustomError.BadRequestError(
+            `Stock insuffisant pour la boîte ID ${b.box_id}. Stock: ${box.inStock}.`
+          );
+        }
+      }
+    }
+
+    // Fetch remaining items from last trip
+    const lastTrip = await db.Trip.findOne({
+      where: { truck_matricule, isActive: false },
+      order: [["date", "DESC"]],
+      include: [
+        {
+          model: db.TripProduct,
+          as: "TripProducts",
+          attributes: ["product", "qttReutour", "qttReutourUnite"],
+        },
+        {
+          model: db.TripBox,
+          as: "TripBoxes",
+          attributes: ["box", "qttIn"],
+        },
+      ],
+      transaction,
+    });
+
+    const remainingProducts = lastTrip?.TripProducts?.map(tp => ({
+      product_id: tp.product,
+      qttOut: tp.qttReutour || 0,
+      qttOutUnite: tp.qttReutourUnite || 0,
+    })).filter(p => p.qttOut > 0 || p.qttOutUnite > 0) || [];
+
+    const remainingBoxes = lastTrip?.TripBoxes?.map(tb => ({
+      box_id: tb.box,
+      qttOut: tb.qttIn || 0,
+    })).filter(b => b.qttOut > 0) || [];
+
+    // Validate that at least one product exists (remaining or new)
+    const validTripProducts = tripProducts.filter(p => p.qttOut > 0 || p.qttOutUnite > 0);
+    if (validTripProducts.length === 0 && remainingProducts.length === 0) {
       throw new CustomError.BadRequestError(
-        "Au moins un produit est requis pour démarrer une tournée."
+        "Au moins un produit avec quantité positive est requis pour démarrer une tournée."
       );
     }
 
-    for (const p of tripProducts) {
-      if (!p.product_id || p.qttOut < 0 || p.qttOutUnite < 0) {
-        throw new CustomError.BadRequestError(
-          `Produit ID ${p.product_id} invalide ou quantités négatives.`
-        );
-      }
-      const product = await db.Product.findOne({
-        where: { id: p.product_id },
-        transaction,
-      });
-      if (!product) {
-        throw new CustomError.NotFoundError(
-          `Produit avec ID ${p.product_id} non trouvé.`
-        );
-      }
-      if (p.qttOut > product.stock || p.qttOutUnite > product.uniteInStock) {
-        throw new CustomError.BadRequestError(
-          `Stock insuffisant pour le produit ID ${p.product_id}. Stock: ${product.stock} caisses, ${product.uniteInStock} unités.`
-        );
-      }
-    }
-
-    // Validate tripBoxes
-    if (!tripBoxes || !Array.isArray(tripBoxes) || tripBoxes.length === 0) {
+    // Validate that at least one box exists (remaining or new)
+    const validTripBoxes = tripBoxes.filter(b => b.qttOut > 0);
+    if (validTripBoxes.length === 0 && remainingBoxes.length === 0) {
       throw new CustomError.BadRequestError(
-        "Au moins une boîte est requise pour démarrer une tournée."
+        "Au moins une boîte avec quantité positive est requise pour démarrer une tournée."
       );
     }
 
-    for (const b of tripBoxes) {
-      if (!b.box_id || b.qttOut < 0) {
-        throw new CustomError.BadRequestError(
-          `Boîte ID ${b.box_id} invalide ou quantité négative.`
-        );
-      }
-      const box = await db.Box.findOne({
-        where: { id: b.box_id },
-        transaction,
+    // Merge remaining and new quantities for TripProduct creation
+    const mergedProducts = [];
+    const productMap = new Map();
+
+    // Add remaining products with positive quantities
+    remainingProducts.forEach(p => {
+      productMap.set(p.product_id, {
+        product_id: p.product_id,
+        qttOut: p.qttOut,
+        qttOutUnite: p.qttOutUnite,
       });
-      if (!box) {
-        throw new CustomError.NotFoundError(
-          `Boîte avec ID ${b.box_id} non trouvée.`
-        );
+    });
+
+    // Add new products with positive quantities, summing if product exists
+    validTripProducts.forEach(p => {
+      if (productMap.has(p.product_id)) {
+        const existing = productMap.get(p.product_id);
+        existing.qttOut += p.qttOut;
+        existing.qttOutUnite += p.qttOutUnite;
+      } else {
+        productMap.set(p.product_id, {
+          product_id: p.product_id,
+          qttOut: p.qttOut,
+          qttOutUnite: p.qttOutUnite,
+        });
       }
-      if (b.qttOut > box.inStock) {
-        throw new CustomError.BadRequestError(
-          `Stock insuffisant pour la boîte ID ${b.box_id}. Stock: ${box.inStock}.`
-        );
+    });
+
+    // Only include products with positive quantities
+    productMap.forEach(p => {
+      if (p.qttOut > 0 || p.qttOutUnite > 0) {
+        mergedProducts.push(p);
       }
-    }
+    });
+
+    // Merge remaining and new boxes
+    const mergedBoxes = [];
+    const boxMap = new Map();
+
+    // Add remaining boxes with positive quantities
+    remainingBoxes.forEach(b => {
+      boxMap.set(b.box_id, {
+        box_id: b.box_id,
+        qttOut: b.qttOut,
+      });
+    });
+
+    // Add new boxes with positive quantities, summing if box exists
+    validTripBoxes.forEach(b => {
+      if (boxMap.has(b.box_id)) {
+        const existing = boxMap.get(b.box_id);
+        existing.qttOut += b.qttOut;
+      } else {
+        boxMap.set(b.box_id, {
+          box_id: b.box_id,
+          qttOut: b.qttOut,
+        });
+      }
+    });
+
+    // Only include boxes with positive quantities
+    boxMap.forEach(b => {
+      if (b.qttOut > 0) {
+        mergedBoxes.push(b);
+      }
+    });
 
     // Create trip
     const trip = await db.Trip.create(
@@ -351,8 +456,8 @@ const startTrip = async (req, res) => {
     );
     console.log("Trip created with ID:", trip.id, "isActive:", trip.isActive);
 
-    // Create TripProducts
-    const productRecords = tripProducts.map((p) => ({
+    // Create TripProducts with merged quantities
+    const productRecords = mergedProducts.map(p => ({
       trip: trip.id,
       product: p.product_id,
       qttOut: p.qttOut,
@@ -363,8 +468,8 @@ const startTrip = async (req, res) => {
     });
     console.log("TripProducts created:", tripProductsCreated.map(tp => tp.toJSON()));
 
-    // Create TripBoxes
-    const boxRecords = tripBoxes.map((b) => ({
+    // Create TripBoxes with merged quantities
+    const boxRecords = mergedBoxes.map(b => ({
       trip: trip.id,
       box: b.box_id,
       qttOut: b.qttOut,
@@ -372,72 +477,74 @@ const startTrip = async (req, res) => {
     const tripBoxesCreated = await db.TripBox.bulkCreate(boxRecords, { transaction });
     console.log("TripBoxes created:", tripBoxesCreated.map(tb => tb.toJSON()));
 
-    // Update product quantities
-    console.log("Updating product quantities...");
-    if (!tripProductsCreated || tripProductsCreated.length === 0) {
-      throw new CustomError.BadRequestError("Aucun produit créé pour la mise à jour du stock.");
-    }
-    await Promise.all(
-      tripProductsCreated.map(async (tripProduct) => {
-        const product = await db.Product.findOne({
-          where: { id: tripProduct.product },
-          transaction,
-        });
-        if (product) {
-          console.log(`Updating product ${tripProduct.product}:`, {
-            stockBefore: product.stock,
-            uniteInStockBefore: product.uniteInStock,
-            qttOut: tripProduct.qttOut,
-            qttOutUnite: tripProduct.qttOutUnite,
+    // Update product quantities (only for new quantities with positive values)
+    if (validTripProducts.length > 0) {
+      console.log("Updating product quantities...");
+      await Promise.all(
+        validTripProducts.map(async (tripProduct) => {
+          const product = await db.Product.findOne({
+            where: { id: tripProduct.product_id },
+            transaction,
           });
-          product.stock -= tripProduct.qttOut;
-          product.uniteInStock -= tripProduct.qttOutUnite;
-          if (product.stock < 0 || product.uniteInStock < 0) {
-            throw new CustomError.BadRequestError(
-              `Stock négatif non autorisé pour le produit ID ${tripProduct.product}.`
-            );
+          if (product) {
+            console.log(`Updating product ${tripProduct.product_id}:`, {
+              stockBefore: product.stock,
+              uniteInStockBefore: product.uniteInStock,
+              qttOut: tripProduct.qttOut,
+              qttOutUnite: tripProduct.qttOutUnite,
+            });
+            product.stock -= tripProduct.qttOut;
+            product.uniteInStock -= tripProduct.qttOutUnite;
+            if (product.stock < 0 || product.uniteInStock < 0) {
+              throw new CustomError.BadRequestError(
+                `Stock négatif non autorisé pour le produit ID ${tripProduct.product_id}.`
+              );
+            }
+            await product.save({ transaction });
+            console.log(`Updated product ${tripProduct.product_id}:`, {
+              stockAfter: product.stock,
+              uniteInStockAfter: product.uniteInStock,
+            });
           }
-          await product.save({ transaction });
-          console.log(`Updated product ${tripProduct.product}:`, {
-            stockAfter: product.stock,
-            uniteInStockAfter: product.uniteInStock,
-          });
-        }
-      })
-    );
+        })
+      );
+    } else {
+      console.log("No new products with positive quantities; skipping product stock update.");
+    }
 
-    // Update box quantities
-    console.log("Updating box quantities...");
-    if (!tripBoxesCreated || tripBoxesCreated.length === 0) {
-      throw new CustomError.BadRequestError("Aucune boîte créée pour la mise à jour du stock.");
-    }
-    await Promise.all(
-      tripBoxesCreated.map(async (tripBox) => {
-        const box = await db.Box.findOne({
-          where: { id: tripBox.box },
-          transaction,
-        });
-        if (box) {
-          console.log(`Updating box ${tripBox.box}:`, {
-            inStockBefore: box.inStock,
-            sentBefore: box.sent,
-            qttOut: tripBox.qttOut,
+    // Update box quantities (only for new quantities with positive values)
+    if (validTripBoxes.length > 0) {
+      console.log("Updating box quantities...");
+      await Promise.all(
+        validTripBoxes.map(async (tripBox) => {
+          const box = await db.Box.findOne({
+            where: { id: tripBox.box_id },
+            transaction,
           });
-          box.inStock -= tripBox.qttOut;
-          box.sent += tripBox.qttOut;
-          if (box.inStock < 0) {
-            throw new CustomError.BadRequestError(
-              `Stock négatif non autorisé pour la boîte ID ${tripBox.box}.`
-            );
+          if (box) {
+            console.log(`Updating box ${tripBox.box_id}:`, {
+              inStockBefore: box.inStock,
+              sentBefore: box.sent,
+              qttOut: tripBox.qttOut,
+            });
+            box.inStock -= tripBox.qttOut;
+            box.sent += tripBox.qttOut;
+            if (box.inStock < 0) {
+              throw new CustomError.BadRequestError(
+                `Stock négatif non autorisé pour la boîte ID ${tripBox.box_id}.`
+              );
+            }
+            await box.save({ transaction });
+            console.log(`Updated box ${tripBox.box_id}:`, {
+              inStockAfter: box.inStock,
+              sentAfter: box.sent,
+            });
           }
-          await box.save({ transaction });
-          console.log(`Updated box ${tripBox.box}:`, {
-            inStockAfter: box.inStock,
-            sentAfter: box.sent,
-          });
-        }
-      })
-    );
+        })
+      );
+    } else {
+      console.log("No new boxes with positive quantities; skipping box stock update.");
+    }
 
     // Fetch full trip details
     const fullTrip = await db.Trip.findOne({
@@ -450,6 +557,28 @@ const startTrip = async (req, res) => {
           model: db.Employee,
           as: "AssistantAssociation",
           attributes: ["name"],
+        },
+        {
+          model: db.TripProduct,
+          as: "TripProducts",
+          include: [
+            {
+              model: db.Product,
+              as: "ProductAssociation",
+              attributes: ["designation"],
+            },
+          ],
+        },
+        {
+          model: db.TripBox,
+          as: "TripBoxes",
+          include: [
+            {
+              model: db.Box,
+              as: "BoxAssociation",
+              attributes: ["designation"],
+            },
+          ],
         },
       ],
       transaction,
@@ -741,10 +870,12 @@ const finishTrip = async (req, res) => {
       console.log("Processing TripCharges...");
       tripChargesData = await Promise.all(
         tripCharges.map(async (tripCharge) => {
+          const today = new Date().getDate()
           const createdCharge = await db.Charge.create(
             {
               type: tripCharge.type,
               amount: tripCharge.amount,
+              date : trip.date
             },
             { transaction }
           );
@@ -1571,7 +1702,6 @@ module.exports = {
   getAllProducts,
   getAllEmployees,
   emptyTruck,
-    getTotalTripRevenue,
-
+  getTotalTripRevenue,
   transferProducts,
 };
