@@ -191,7 +191,6 @@ const getActiveTrips = async (req, res) => {
     });
   }
 };
-
 const startTrip = async (req, res) => {
   const transaction = await db.sequelize.transaction();
   try {
@@ -351,26 +350,24 @@ const startTrip = async (req, res) => {
       product_id: tp.product,
       qttOut: tp.qttReutour || 0,
       qttOutUnite: tp.qttReutourUnite || 0,
-    })).filter(p => p.qttOut > 0 || p.qttOutUnite > 0) || [];
+    })) || [];
 
     const remainingBoxes = lastTrip?.TripBoxes?.map(tb => ({
       box_id: tb.box,
       qttOut: tb.qttIn || 0,
-    })).filter(b => b.qttOut > 0) || [];
+    })) || [];
 
     // Validate that at least one product exists (remaining or new)
-    const validTripProducts = tripProducts.filter(p => p.qttOut > 0 || p.qttOutUnite > 0);
-    if (validTripProducts.length === 0 && remainingProducts.length === 0) {
+    if (tripProducts.length === 0 && remainingProducts.length === 0) {
       throw new CustomError.BadRequestError(
-        "Au moins un produit avec quantité positive est requis pour démarrer une tournée."
+        "Au moins un produit est requis pour démarrer une tournée."
       );
     }
 
     // Validate that at least one box exists (remaining or new)
-    const validTripBoxes = tripBoxes.filter(b => b.qttOut > 0);
-    if (validTripBoxes.length === 0 && remainingBoxes.length === 0) {
+    if (tripBoxes.length === 0 && remainingBoxes.length === 0) {
       throw new CustomError.BadRequestError(
-        "Au moins une boîte avec quantité positive est requise pour démarrer une tournée."
+        "Au moins une boîte est requise pour démarrer une tournée."
       );
     }
 
@@ -378,7 +375,7 @@ const startTrip = async (req, res) => {
     const mergedProducts = [];
     const productMap = new Map();
 
-    // Add remaining products with positive quantities
+    // Add remaining products
     remainingProducts.forEach(p => {
       productMap.set(p.product_id, {
         product_id: p.product_id,
@@ -387,8 +384,8 @@ const startTrip = async (req, res) => {
       });
     });
 
-    // Add new products with positive quantities, summing if product exists
-    validTripProducts.forEach(p => {
+    // Add new products, summing quantities if product exists
+    tripProducts.forEach(p => {
       if (productMap.has(p.product_id)) {
         const existing = productMap.get(p.product_id);
         existing.qttOut += p.qttOut;
@@ -402,18 +399,13 @@ const startTrip = async (req, res) => {
       }
     });
 
-    // Only include products with positive quantities
-    productMap.forEach(p => {
-      if (p.qttOut > 0 || p.qttOutUnite > 0) {
-        mergedProducts.push(p);
-      }
-    });
+    productMap.forEach(p => mergedProducts.push(p));
 
     // Merge remaining and new boxes
     const mergedBoxes = [];
     const boxMap = new Map();
 
-    // Add remaining boxes with positive quantities
+    // Add remaining boxes
     remainingBoxes.forEach(b => {
       boxMap.set(b.box_id, {
         box_id: b.box_id,
@@ -421,8 +413,8 @@ const startTrip = async (req, res) => {
       });
     });
 
-    // Add new boxes with positive quantities, summing if box exists
-    validTripBoxes.forEach(b => {
+    // Add new boxes, summing quantities if box exists
+    tripBoxes.forEach(b => {
       if (boxMap.has(b.box_id)) {
         const existing = boxMap.get(b.box_id);
         existing.qttOut += b.qttOut;
@@ -434,12 +426,7 @@ const startTrip = async (req, res) => {
       }
     });
 
-    // Only include boxes with positive quantities
-    boxMap.forEach(b => {
-      if (b.qttOut > 0) {
-        mergedBoxes.push(b);
-      }
-    });
+    boxMap.forEach(b => mergedBoxes.push(b));
 
     // Create trip
     const trip = await db.Trip.create(
@@ -477,11 +464,11 @@ const startTrip = async (req, res) => {
     const tripBoxesCreated = await db.TripBox.bulkCreate(boxRecords, { transaction });
     console.log("TripBoxes created:", tripBoxesCreated.map(tb => tb.toJSON()));
 
-    // Update product quantities (only for new quantities with positive values)
-    if (validTripProducts.length > 0) {
+    // Update product quantities (only for new quantities, if any)
+    if (tripProducts.length > 0) {
       console.log("Updating product quantities...");
       await Promise.all(
-        validTripProducts.map(async (tripProduct) => {
+        tripProducts.map(async (tripProduct) => {
           const product = await db.Product.findOne({
             where: { id: tripProduct.product_id },
             transaction,
@@ -509,14 +496,14 @@ const startTrip = async (req, res) => {
         })
       );
     } else {
-      console.log("No new products with positive quantities; skipping product stock update.");
+      console.log("No new products provided; skipping product stock update.");
     }
 
-    // Update box quantities (only for new quantities with positive values)
-    if (validTripBoxes.length > 0) {
+    // Update box quantities (only for new quantities, if any)
+    if (tripBoxes.length > 0) {
       console.log("Updating box quantities...");
       await Promise.all(
-        validTripBoxes.map(async (tripBox) => {
+        tripBoxes.map(async (tripBox) => {
           const box = await db.Box.findOne({
             where: { id: tripBox.box_id },
             transaction,
@@ -543,7 +530,7 @@ const startTrip = async (req, res) => {
         })
       );
     } else {
-      console.log("No new boxes with positive quantities; skipping box stock update.");
+      console.log("No new boxes provided; skipping box stock update.");
     }
 
     // Fetch full trip details
@@ -599,7 +586,6 @@ const startTrip = async (req, res) => {
     res.status(status).json({ message: error.message });
   }
 };
-
 const finishTrip = async (req, res) => {
   const transaction = await db.sequelize.transaction();
   try {
