@@ -12,14 +12,15 @@ const {
   getAllEmployees,
   emptyTruck,
   getTotalTripRevenue,
+  getPreviousTrip,
 } = require("../controller/tripController");
 
 // Routes for trip management
 router.get("/", getTrips); // Get all trips with pagination
 router.get("/active", getActiveTrips); // Get active trips
 router.get("/total-revenue", getTotalTripRevenue);
-
 router.get("/:tripId", getTripById); // Get a trip by ID
+router.get("/previous/:tripId", getPreviousTrip); // Get the previous trip for a trip ID
 router.post("/start", startTrip); // Start a new trip
 router.post("/finish/:id", finishTrip); // Finish a trip
 router.get("/last/:id", getRestInLastTruck); // Get last trip for a truck
