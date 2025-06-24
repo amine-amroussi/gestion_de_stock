@@ -68,12 +68,12 @@ const getFinancialSummary = async (req, res) => {
     // Fetch trips for revenue
     const trips = await Trip.findAll({
       where: dateFilter,
-      attributes: ['id', 'date', 'receivedAmount'],
+      attributes: ['id', 'date', 'receivedAmount', "waitedAmount"],
     });
-    const totalRevenue = trips.reduce((sum, trip) => sum + (parseFloat(trip.receivedAmount) || 0), 0);
+    const totalRevenue = trips.reduce((sum, trip) => sum + (parseFloat(trip.waitedAmount) || 0), 0);
     const revenueByDate = trips.reduce((acc, trip) => {
       const date = moment(trip.date).format('YYYY-MM-DD');
-      acc[date] = (acc[date] || 0) + (parseFloat(trip.receivedAmount) || 0);
+      acc[date] = (acc[date] || 0) + (parseFloat(trip.waitedAmount) || 0);
       return acc;
     }, {});
 
@@ -114,7 +114,7 @@ const getFinancialSummary = async (req, res) => {
     }, {});
 
     // Calculate net revenue
-    const netRevenue = totalRevenue - totalCharges;
+    const netRevenue = totalRevenue - totalCharges - totalPurchases ;
 
     res.status(200).json({
       data: {

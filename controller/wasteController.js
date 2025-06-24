@@ -28,10 +28,26 @@ const createWaste = async (req, res) => {
 };
 
 const getAllWastes = async (req, res) => {
-    const { page = 1, limit = 10 } = req.query;
+    const { page = 1, limit = 10, type, startDate, endDate } = req.query;
     const offset = (page - 1) * limit;
 
+    // Build the where clause for filtering
+    const where = {};
+    if (type) {
+        where.type = type;
+    }
+    if (startDate) {
+        where.createdAt = { [db.Sequelize.Op.gte]: new Date(startDate) };
+    }
+    if (endDate) {
+        where.createdAt = {
+            ...where.createdAt,
+            [db.Sequelize.Op.lte]: new Date(endDate),
+        };
+    }
+
     const { count, rows: wastes } = await db.Waste.findAndCountAll({
+        where,
         offset,
         limit: parseInt(limit),
     });

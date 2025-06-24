@@ -17,6 +17,7 @@ const purchaseRoutes = require("./routes/purchaseRoutes");
 const tripRoutes = require("./routes/tripRoutes");
 const paymentRoutes = require("./routes/paymentEmployeeRoutes");
 const revenueRoutes = require("./routes/revenueRoutes");
+const defaultRoutes = require("./routes/defaultValuesRoutes");
 
 
 const notFoundMiddleware = require("./middleware/not-found");
@@ -40,6 +41,7 @@ app.use("/api/v1/purchase", purchaseRoutes);
 app.use("/api/v1/trip", tripRoutes);
 app.use("/api/v1/payment", paymentRoutes);
 app.use("/api/v1/revenue", revenueRoutes);
+app.use("/api/v1/default", defaultRoutes);
 
 // SET THE MIDDLEWARES
 app.use(errorHandlerMiddleware);

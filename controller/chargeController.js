@@ -1,6 +1,7 @@
 const CustomError = require('../errors');
 const db = require('../models');
 const { StatusCodes } = require('http-status-codes');
+const { Op } = require('sequelize');
 
 const createCharge = async (req, res) => {
   const { type, amount, date } = req.body;
@@ -30,27 +31,54 @@ const createCharge = async (req, res) => {
 };
 
 const getAllCharges = async (req, res) => {
-  const { page = 1, limit = 10 } = req.query;
+  const { page = 1, limit = 10, type, startDate, endDate } = req.query;
   const offset = (page - 1) * limit;
+  const parsedLimit = parseInt(limit);
 
-  const { count, rows: charges } = await db.Charge.findAndCountAll({
-    offset,
-    limit: parseInt(limit),
-  });
-
-  if (!charges.length) {
-    throw new CustomError.NotFoundError('Aucune charge trouvée');
+  if (isNaN(parsedLimit) || parsedLimit <= 0) {
+    throw new CustomError.BadRequestError('La limite doit être un nombre positif');
   }
 
-  res.status(StatusCodes.OK).json({
-    charges,
-    pagination: {
-      totalItems: count,
-      totalPages: Math.ceil(count / limit),
-      currentPage: parseInt(page),
-      pageSize: parseInt(limit),
-    },
-  });
+  const where = {};
+  if (type) {
+    where.type = { [Op.like]: `%${type}%` }; // Changed to Op.like for MySQL
+  }
+  if (startDate) {
+    const parsedStartDate = new Date(startDate);
+    if (isNaN(parsedStartDate.getTime())) {
+      throw new CustomError.BadRequestError('La date de début est invalide');
+    }
+    where.date = { [Op.gte]: parsedStartDate };
+  }
+  if (endDate) {
+    const parsedEndDate = new Date(endDate);
+    if (isNaN(parsedEndDate.getTime())) {
+      throw new CustomError.BadRequestError('La date de fin est invalide');
+    }
+    where.date = { ...where.date, [Op.lte]: parsedEndDate };
+  }
+
+  try {
+    const { count, rows: charges } = await db.Charge.findAndCountAll({
+      where,
+      offset,
+      limit: parsedLimit,
+      order: [['date', 'DESC']],
+    });
+
+    res.status(StatusCodes.OK).json({
+      charges,
+      pagination: {
+        totalItems: count,
+        totalPages: Math.ceil(count / parsedLimit),
+        currentPage: parseInt(page),
+        pageSize: parsedLimit,
+      },
+    });
+  } catch (error) {
+    console.error('Database error:', error);
+    throw new CustomError.InternalServerError('Erreur lors de l\'accès à la base de données');
+  }
 };
 
 const getChargeById = async (req, res) => {

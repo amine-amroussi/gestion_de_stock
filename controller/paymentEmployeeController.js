@@ -49,7 +49,7 @@ const createEmployePayment = async (req, res) => {
           [db.Sequelize.Op.between]: [new Date(year, month - 1, 1), new Date(year, month, 0)],
         },
       },
-      attributes: ["waitedAmount", "receivedAmount"],
+      attributes: ["waitedAmount", "receivedAmount", "deff"],
     });
 
     // Calculate total waitedAmount and credit for current month
@@ -58,7 +58,7 @@ const createEmployePayment = async (req, res) => {
       const received = parseFloat(trip.receivedAmount) || 0;
       const waited = parseFloat(trip.waitedAmount) || 0;
       totalWaitedAmount += waited;
-      credit += received - waited;
+      credit += parseFloat(trip.deff) || 0;
     }
 
     // Add pending credits to current credit

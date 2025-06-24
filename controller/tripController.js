@@ -690,11 +690,7 @@ const finishTrip = async (req, res) => {
 
         const wasteQtt = wasteByProduct[tripProduct.product_id] || 0;
 
-        console.log(`Updating TripProduct ${tripProduct.product_id}:`, {
-          qttReutour: tripProduct.qttReutour,
-          qttReutourUnite: tripProduct.qttReutourUnite,
-          wasteQtt,
-        });
+     
         product.qttReutour = tripProduct.qttReutour;
         product.qttReutourUnite = tripProduct.qttReutourUnite;
 
@@ -915,7 +911,8 @@ const finishTrip = async (req, res) => {
       (total, charge) => total + (charge.amount || 0),
       0
     );
-    waitedAmount = waitedAmount - totalCharges - totalWasteCost;
+    // waitedAmount = waitedAmount - totalCharges - totalWasteCost;
+    waitedAmount = waitedAmount - totalWasteCost;
 
     const adjustedReceivedAmount = parseFloat(receivedAmount) || 0;
 
@@ -941,7 +938,7 @@ const finishTrip = async (req, res) => {
     trip.waitedAmount = waitedAmount;
     trip.receivedAmount = adjustedReceivedAmount;
     trip.benefit = adjustedReceivedAmount - totalCharges;
-    trip.deff = adjustedReceivedAmount - waitedAmount;
+    trip.deff = adjustedReceivedAmount - waitedAmount + totalCharges;
     trip.isActive = false;
     await trip.save({ transaction });
 
